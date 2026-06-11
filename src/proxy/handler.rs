@@ -9,6 +9,7 @@ use axum::Router;
 use arc_swap::ArcSwap;
 
 use crate::config::dynamic_config::DynamicConfig;
+use crate::proxy::error::ProxyError;
 
 async fn health_handler() -> impl IntoResponse {
     StatusCode::OK
@@ -29,13 +30,13 @@ async fn proxy_handler(
 
     let host = match host {
         Some(h) => h,
-        None => return StatusCode::BAD_REQUEST.into_response(),
+        None => return ProxyError::BadRequest.into_response(),
     };
 
     let config = state.load();
     match config.lookup(host) {
         Some(_site) => StatusCode::OK.into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+        None => ProxyError::NotFound.into_response(),
     }
 }
 
@@ -125,6 +126,12 @@ mod tests {
 
         let resp = send_request(&mut router, "GET", "/some/path", None).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"Bad Request");
     }
 
     #[tokio::test]
@@ -140,6 +147,12 @@ mod tests {
 
         let resp = send_request(&mut router, "GET", "/some/path", Some("unknown.host")).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"Not Found");
     }
 
     #[tokio::test]
