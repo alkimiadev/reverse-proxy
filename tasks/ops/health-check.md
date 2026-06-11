@@ -1,7 +1,7 @@
 ---
 id: ops/health-check
 name: Implement health check endpoint on separate local port and HTTPS fallback
-status: pending
+status: complete
 depends_on: [config/static-config]
 scope: narrow
 risk: low
