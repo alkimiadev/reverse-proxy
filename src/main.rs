@@ -15,7 +15,7 @@ use reverse_proxy::health;
 use reverse_proxy::logging;
 use reverse_proxy::proxy::{build_router, create_http_client, create_https_client, ProxyState};
 use reverse_proxy::rate_limit::{start_eviction_task, RateLimiter};
-use reverse_proxy::server::serve_https_listener;
+use reverse_proxy::server::{drain_in_flight, serve_https_listener, InFlightCounter};
 use reverse_proxy::shutdown::GracefulShutdown;
 use reverse_proxy::tls::acceptor::{setup_tls, TlsMode};
 use reverse_proxy::tls::redirect;
@@ -74,6 +74,7 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
         config: config_arc.clone(),
         http_client,
         https_client,
+        is_https: true,
     });
 
     let reload_handle = Arc::new(ConfigReloadHandle::new(
@@ -197,6 +198,8 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
 
     let app = build_router(proxy_state.clone(), config_arc.clone(), rate_limiter);
 
+    let in_flight = InFlightCounter::new();
+
     let mut https_server_handles = Vec::new();
 
     for ((listener_config, tcp_listener), tls_acceptor) in
@@ -209,6 +212,7 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
             tls_acceptor,
             app.clone(),
             shutdown_rx,
+            in_flight.clone(),
         ));
 
         info!(
@@ -233,6 +237,16 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
 
     for handle in https_server_handles {
         handle.abort();
+    }
+
+    let remaining = drain_in_flight(&in_flight, shutdown.shutdown_timeout()).await;
+    if remaining > 0 {
+        warn!(
+            remaining = remaining,
+            "shutdown timeout expired, forcing exit"
+        );
+    } else {
+        info!("all in-flight requests completed");
     }
 
     Ok(())

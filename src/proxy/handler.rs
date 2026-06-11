@@ -22,6 +22,7 @@ pub struct ProxyState {
     pub config: Arc<ArcSwap<DynamicConfig>>,
     pub http_client: Client<HttpConnector, Body>,
     pub https_client: Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>,
+    pub is_https: bool,
 }
 
 async fn health_handler() -> impl IntoResponse {
@@ -53,8 +54,8 @@ async fn proxy_handler(
         None => return ProxyError::UnknownHost.into_response(),
     };
 
-    let is_https = determine_if_https(host);
-    inject_proxy_headers(req.headers_mut(), remote_addr, is_https);
+    let host_owned = host.to_string();
+    inject_proxy_headers(req.headers_mut(), remote_addr, state.is_https);
     remove_hop_by_hop(req.headers_mut());
 
     let upstream_scheme = site.upstream_scheme.clone();
@@ -89,22 +90,16 @@ async fn proxy_handler(
             if e.is_connect() {
                 ProxyError::UpstreamConnection(e).into_response()
             } else {
-                warn!(error = %e, "upstream request failed");
-                StatusCode::BAD_GATEWAY.into_response()
+                let upstream_addr = format!("{}://{}", upstream_scheme, upstream);
+                ProxyError::BadGateway {
+                    host: host_owned,
+                    upstream: upstream_addr,
+                }
+                .into_response()
             }
         }
         Err(_) => ProxyError::UpstreamTimeout.into_response(),
     }
-}
-
-fn determine_if_https(host: &str) -> bool {
-    let port_str = host.split(':').nth(1);
-    if let Some(port) = port_str {
-        if let Ok(p) = port.parse::<u16>() {
-            return p == 443;
-        }
-    }
-    true
 }
 
 fn build_upstream_uri(scheme: &str, upstream: &str, original_uri: &Uri) -> Uri {
@@ -200,6 +195,7 @@ mod tests {
             ))),
             http_client: create_http_client(),
             https_client: create_https_client(),
+            is_https: true,
         })
     }
 
@@ -296,26 +292,6 @@ mod tests {
         );
         let resp = router.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[test]
-    fn test_determine_if_https_port_443() {
-        assert!(determine_if_https("example.com:443"));
-    }
-
-    #[test]
-    fn test_determine_if_https_port_80() {
-        assert!(!determine_if_https("example.com:80"));
-    }
-
-    #[test]
-    fn test_determine_if_https_no_port() {
-        assert!(determine_if_https("example.com"));
-    }
-
-    #[test]
-    fn test_determine_if_https_port_8443() {
-        assert!(!determine_if_https("example.com:8443"));
     }
 
     #[test]

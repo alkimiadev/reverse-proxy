@@ -1,7 +1,7 @@
 ---
 id: review/core-components
 name: Review core component implementations for spec conformance and pattern consistency
-status: pending
+status: complete
 depends_on: [config/static-config, config/dynamic-config, config/validation, config/cli-parsing, tls/manual-tls, tls/acme-tls, proxy/host-routing, proxy/headers-and-forwarding, proxy/error-responses]
 scope: moderate
 risk: low
