@@ -29,9 +29,10 @@ Add a configurable health check port that binds to `127.0.0.1` only (localhost),
 serving `/health` over plain HTTP. This is a separate listener from the main
 HTTP and HTTPS listeners.
 
-The port is configurable via `health_check_port` in StaticConfig. Setting it
-to `0` (default) disables the separate health check listener, and `/health`
-remains available on the main HTTPS listener as a fallback.
+The port is configurable via `health_check_port` in StaticConfig. The default
+value is `9900` (enabled, localhost only). Setting it to `0` disables the
+separate health check listener, and `/health` remains available on the main
+HTTPS listener as a fallback.
 
 ## Rationale
 

@@ -51,6 +51,7 @@ certificate via ACME.
 | [017](decisions/017-upstream-connection-defaults.md) | Upstream Connection Defaults | Accepted |
 | [018](decisions/018-body-size-limit.md) | Request Body Size Limit | Accepted |
 | [019](decisions/019-multi-config-listeners.md) | Multi-Config Listener Support | Accepted |
+| [020](decisions/020-container-deployment.md) | Container Deployment Model | Accepted |
 
 ## Open Questions
 

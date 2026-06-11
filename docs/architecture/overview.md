@@ -81,35 +81,50 @@ details.
 ## Architecture
 
 ```
-                     ┌────────────────────────────────────┐
-                     │     reverse-proxy (Rust/axum)       │
-config.toml ───────► │  StaticConfig + DynamicConfig       │
-                     │  (ArcSwap for hot-reload)            │
-                     │                                      │
-                     │  ┌─ Listener 1 ─────────────────┐   │
-bind_addr_1:80  ───► │  │  HTTP → 301 redirect           │   │
-                     │  └────────────────────────────────┘   │
-bind_addr_1:443 ───► │  │  TLS listener (tokio-rustls)    │   │
-                     │  │  ├─ ACME or Manual TLS config    │   │
-                     │  │  └─ axum router                  │   │
-                     │  │     ├─ Host-based routing         │   │
-                     │  │     ├─ git.alk.dev → :3000       │   │
-                     │  │     └─ Rate limiting, headers     │   │
-                     │  └────────────────────────────────┘   │
-                     │                                      │
-                     │  ┌─ Listener N ─────────────────┐   │
-bind_addr_N:80  ───► │  │  HTTP → 301 redirect           │   │
-                     │  └────────────────────────────────┘   │
-bind_addr_N:443 ───► │  │  TLS listener (tokio-rustls)    │   │
-                     │  │  ├─ Manual TLS cert             │   │
-                     │  │  └─ axum router                  │   │
-                     │  │     ├─ alk.dev → :8080           │   │
-                     │  │     └─ Rate limiting, headers     │   │
-                     │  └────────────────────────────────┘   │
-                     │                                      │
-                     │  /health → 200 OK (port 9900)        │
-                     └────────────────────────────────────┘
+                      ┌────────────────────────────────────┐
+                      │  reverse-proxy container (Rust/axum)│
+ config.toml ───────► │  StaticConfig + DynamicConfig       │
+ (volume mount)       │  (ArcSwap for hot-reload)            │
+                      │                                      │
+                      │  ┌─ Listener 1 ─────────────────┐   │
+ bind_addr:80  ────►  │  │  HTTP → 301 redirect           │   │
+ (published)          │  └────────────────────────────────┘   │
+                      │                                      │
+ bind_addr:443 ────►  │  │  TLS listener (tokio-rustls)    │   │
+ (published)          │  │  ├─ ACME or Manual TLS config    │   │
+                      │  │  └─ axum router                  │   │
+                      │  │     ├─ Host-based routing         │   │
+                      │  │     ├─ git.alk.dev → gitea:3000  │   │
+                      │  │     └─ Rate limiting, headers     │   │
+                      │  └────────────────────────────────┘   │
+                      │                                      │
+                      │  ┌─ Listener N ─────────────────┐   │
+ bind_addr_N:80  ───► │  │  HTTP → 301 redirect           │   │
+                      │  └────────────────────────────────┘   │
+                      │                                      │
+ bind_addr_N:443 ───► │  │  TLS listener (tokio-rustls)    │   │
+                      │  │  ├─ Manual TLS cert             │   │
+                      │  │  └─ axum router                  │   │
+                      │  │     ├─ alk.dev → app:8080       │   │
+                      │  │     └─ Rate limiting, headers     │   │
+                      │  └────────────────────────────────┘   │
+                      │                                      │
+                      │  /health → 200 OK (port 9900)        │
+                      └────────────────────────────────────┘
+                            │              │
+                     ┌──────┘              └──────┐
+                     │                             │
+              Docker network              Volume mounts:
+              (upstream DNS)            ├─ config (ro)
+              ├─ gitea:3000              ├─ ACME cache (rw)
+              ├─ app:8080                ├─ log dir (rw, fail2ban)
+                                         └─ admin socket (rw)
 ```
+
+In container deployments (ADR-020), the proxy runs in a minimal container with
+`0.0.0.0` bind address and Docker port publishing. Upstream addresses use Docker
+DNS names for same-host containers (e.g., `gitea:3000`) but also support
+loopback, LAN, and tunnel endpoints for multi-host deployments.
 
 ## Crate Dependencies
 
@@ -180,6 +195,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [017](decisions/017-upstream-connection-defaults.md) | Upstream connection defaults | HTTP/1.1, no redirects, connection pooling |
 | [018](decisions/018-body-size-limit.md) | Request body size limit | 100 MB default matching nginx, Gitea push compatibility |
 | [019](decisions/019-multi-config-listeners.md) | Multi-config listeners | `[[listeners]]` supporting both dedicated-IP and shared-IP deployment models |
+| [020](decisions/020-container-deployment.md) | Container deployment model | Defense-in-depth via container isolation; file-primary logging; flexible upstream addressing |
 
 ## Open Questions
 

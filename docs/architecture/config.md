@@ -86,10 +86,19 @@ Immutable after startup. Changes require a process restart.
 | Field | Type | Description |
 |-------|------|-------------|
 | `listeners` | `Vec<ListenerConfig>` | Independent TLS endpoints, each with its own bind address and TLS config (see ADR-019) |
+| `allow_wildcard_bind` | `bool` | Allow `0.0.0.0` as a bind address. Required for container deployments. Default: `false` (see ADR-016, ADR-020) |
 | `health_check_port` | `u16` | Port for local health check endpoint (default: `9900`; set to `0` to disable; see ADR-013) |
 | `admin_socket_path` | `String` | Unix domain socket path for admin API (default: `/run/reverse-proxy/admin.sock`; empty string to disable; see ADR-014) |
-| `log_level` | `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` | Logging verbosity |
-| `log_format` | `"text"` or `"json"` | Log output format |
+| `shutdown_timeout_secs` | `u64` | Maximum seconds to wait for in-flight requests during graceful shutdown (default: `30`) |
+| `logging` | `LoggingConfig` | Logging configuration (see below) |
+
+**LoggingConfig** (nested in `[logging]` TOML section):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `level` | `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` | Logging verbosity |
+| `format` | `"text"` or `"json"` | Log output format |
+| `log_file_path` | `String` | Path to log file. When set, structured logs are written to this file in addition to stdout/stderr. Strongly recommended for fail2ban integration in container deployments (see ADR-020). Default: not set (file logging disabled) |
 
 **ListenerConfig** (per-listener static config):
 
@@ -127,7 +136,7 @@ connections immediately.
 | Field | Type | Description |
 |-------|------|-------------|
 | `host` | `String` | Hostname to match (e.g., `"git.alk.dev"`) |
-| `upstream` | `String` | Upstream address (e.g., `"127.0.0.1:3000"`) |
+| `upstream` | `String` | Upstream address. Supports Docker DNS (`gitea:3000`), loopback (`127.0.0.1:3000`), LAN IPs, and tunnel endpoints. No assumption about upstream locality (see ADR-020) |
 | `upstream_scheme` | `"http"` or `"https"` | Protocol for upstream connection (default: `"http"`) |
 | `upstream_connect_timeout_secs` | `u64` | TCP connect timeout in seconds (default: `5`; see ADR-015, ADR-017) |
 | `upstream_request_timeout_secs` | `u64` | Full request timeout in seconds (default: `60`; see ADR-015, ADR-017) |
@@ -195,6 +204,7 @@ admin_socket_path = "/run/reverse-proxy/admin.sock"  # Empty string to disable
 [logging]
 level = "info"
 format = "text"                  # "text" or "json"
+# log_file_path = "/var/log/reverse-proxy/access.log"  # Optional; always-on when set
 
 [rate_limit]
 requests_per_second = 10
@@ -251,6 +261,7 @@ admin_socket_path = "/run/reverse-proxy/admin.sock"
 [logging]
 level = "info"
 format = "text"
+# log_file_path = "/var/log/reverse-proxy/access.log"  # Optional; always-on when set
 
 [rate_limit]
 requests_per_second = 10
@@ -285,7 +296,7 @@ upstream = "127.0.0.1:8080"
 On startup, the config is validated:
 
 1. At least one `[[listeners]]` entry must exist
-2. Each listener's `bind_addr` is not `0.0.0.0` (must be explicit; see ADR-016)
+2. Each listener's `bind_addr` is not `0.0.0.0` unless `allow_wildcard_bind = true` (in config) or `--allow-wildcard-bind` (CLI flag) is set (see ADR-016, ADR-020)
 3. Each listener's `bind_addr` and `https_port` combination must be unique
 4. In ACME mode, `acme_domains` must be non-empty
 5. In manual mode, `cert_path` and `key_path` must both be set and the files
@@ -321,6 +332,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [015](decisions/015-per-site-timeouts.md) | Per-site upstream timeouts with defaults | 5s connect / 60s request defaults, per-site overrides |
 | [016](decisions/016-explicit-bind-address.md) | Explicit bind address required | Rejects `0.0.0.0` to prevent accidental exposure |
 | [019](decisions/019-multi-config-listeners.md) | Multi-config listeners | `[[listeners]]` supporting both dedicated-IP and shared-IP deployment models |
+| [020](decisions/020-container-deployment.md) | Container deployment model | Flexible upstream addressing; `allow_wildcard_bind` override for containers |
 
 ## Open Questions
 

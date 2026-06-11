@@ -92,7 +92,7 @@ from axum's `ConnectInfo` and the original request:
 | `Host` | Original request `Host` header | Already present; preserved as-is |
 | `X-Real-IP` | `ConnectInfo<SocketAddr>` remote IP | Set to client's IP address |
 | `X-Forwarded-For` | Client IP, appended if header exists | Comma-separated list of proxies |
-| `X-Forwarded-Proto` | Determined by listener | `https` on port 443, `http` on port 80 |
+| `X-Forwarded-Proto` | Determined by which listener port received the request | `https` for requests on the listener's `https_port`, `http` for requests on the listener's `http_port` |
 
 The `X-Forwarded-For` handling must append the client IP to any existing value
 (rather than replacing it), to support chained proxies correctly.

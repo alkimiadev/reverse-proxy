@@ -87,13 +87,34 @@ REQUEST client_ip=203.0.113.50 host=git.alk.dev method=GET path=/user/repo statu
 
 ### Output
 
-Logs are written to:
-- **stdout/stderr**: For systemd/journald integration
-- **File** (optional): For fail2ban consumption at
-  `/var/log/reverse-proxy/access.log`
+Logs are written to two destinations simultaneously:
+- **File** (primary): `/var/log/reverse-proxy/access.log` — the authoritative
+  source for fail2ban consumption. File logging is always enabled when the
+  `log_file_path` config is set. See ADR-020 for the rationale behind
+  file-primary logging.
+- **stdout/stderr**: Always-on, for `docker logs`, `journalctl`, and
+  development use. Structured in the same format as the file output.
 
 The `tracing-subscriber` layer configuration supports both simultaneously via
 `Layer` composition.
+
+### File Logging and fail2ban
+
+File logging is the primary integration point for fail2ban. A log file on a
+volume mount is simpler and more reliable than parsing Docker log drivers or
+journald — no log driver configuration, no format conversion, no risk of
+dropping events.
+
+In container deployments, the log directory is volume-mounted so fail2ban on
+the host can read it directly:
+
+```yaml
+volumes:
+  - /var/log/reverse-proxy:/var/log/reverse-proxy
+```
+
+A corresponding fail2ban filter definition and jail configuration are provided
+as part of the deployment documentation.
 
 ### Log Levels
 
@@ -145,6 +166,9 @@ a separate concern that would produce 502/504 responses in the proxy handler.
 - Prometheus metrics at `/metrics`
 
 ## Systemd Integration
+
+The proxy can also run as a bare binary via systemd (alternative to container
+deployment). The systemd unit file is provided for this use case.
 
 ### Unit File
 
@@ -244,9 +268,180 @@ reverse-proxy [OPTIONS]
 Options:
   --config <PATH>      Path to config file [default: /etc/reverse-proxy/config.toml]
   --validate          Validate config and exit
+  --allow-wildcard-bind  Permit 0.0.0.0 as a bind address (for container deployments)
   --help              Show help
   --version           Show version
 ```
+
+## Container Deployment
+
+### Rationale
+
+The proxy runs in a minimal Docker container for defense-in-depth. Even if an
+attacker finds a logic-level vulnerability, they must also escape the container
+boundary. Combined with Rust's memory safety, this provides two independent
+barriers against exploitation. See ADR-020 for the full rationale.
+
+### Container Image
+
+Multi-stage build: compile in `rust:alpine`, run in `alpine` (or `scratch` for
+absolute minimum). The final image contains only the static binary and
+necessary runtime files. No shell, no package manager, no unnecessary tools.
+
+The binary is compiled against the `x86_64-unknown-linux-musl` target for
+static linking. The `aws_lc_rs` crypto provider is statically linked — no
+OpenSSL dependency.
+
+### Networking
+
+The proxy supports flexible upstream addressing — no assumption about upstream
+localality:
+
+| Deployment | Upstream Address | Example |
+|------------|-----------------|---------|
+| Same-host, shared Docker network | Docker DNS name | `gitea:3000` |
+| Same-host, host networking | Loopback | `127.0.0.1:3000` |
+| Different host, LAN | LAN IP | `10.0.0.5:3000` |
+| Different host, VPN/tunnel | Tunnel endpoint | Varies by tunnel config |
+
+In container deployments, the proxy binds `0.0.0.0` inside the container and
+Docker publishes specific ports to the host IP. The `allow_wildcard_bind`
+override is required for this configuration (see ADR-016, ADR-020).
+
+### Volume Mounts
+
+| Container Path | Host Path | Purpose |
+|---------------|-----------|---------|
+| `/etc/reverse-proxy/config.toml` | Config file (read-only) | Proxy configuration |
+| `/var/lib/reverse-proxy/acme-cache/` | ACME state directory | Certificate persistence across restarts |
+| `/var/log/reverse-proxy/` | Log directory | fail2ban reads from host |
+| `/run/reverse-proxy/admin.sock` | Admin socket | Host-side config reload commands |
+
+### Docker Compose Example
+
+This example shows the reverse proxy alongside a Gitea container on a shared
+Docker network. Real IPs, secrets, and domain names are replaced with
+placeholders.
+
+```yaml
+services:
+  reverse-proxy:
+    build: .
+    container_name: reverse-proxy
+    restart: unless-stopped
+    ports:
+      - "203.0.113.10:80:80"     # HTTP redirect
+      - "203.0.113.10:443:443"   # HTTPS
+    volumes:
+      - /etc/reverse-proxy/config.toml:/etc/reverse-proxy/config.toml:ro
+      - /var/lib/reverse-proxy/acme-cache:/var/lib/reverse-proxy/acme-cache
+      - /var/log/reverse-proxy:/var/log/reverse-proxy
+      - /run/reverse-proxy:/run/reverse-proxy
+    networks:
+      - proxy-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9900/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  gitea:
+    image: gitea/gitea:latest
+    container_name: gitea
+    restart: unless-stopped
+    ports:
+      - "203.0.113.10:22:2222"    # Git SSH
+    volumes:
+      - /opt/gitea:/data
+    networks:
+      - proxy-net
+      - gitea-db-net
+
+  gitea-db:
+    image: postgres:16-alpine
+    container_name: gitea-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: gitea
+    volumes:
+      - gitea-db:/var/lib/postgresql/data
+    networks:
+      - gitea-db-net
+
+networks:
+  proxy-net:
+  gitea-db-net:
+
+volumes:
+  gitea-db:
+```
+
+Corresponding proxy config (inside the container):
+
+```toml
+allow_wildcard_bind = true
+health_check_port = 9900
+admin_socket_path = "/run/reverse-proxy/admin.sock"
+
+[logging]
+level = "info"
+format = "text"
+log_file_path = "/var/log/reverse-proxy/access.log"
+
+[rate_limit]
+requests_per_second = 10
+burst = 20
+
+[body]
+limit_bytes = 104857600
+
+[[listeners]]
+bind_addr = "0.0.0.0"
+http_port = 80
+https_port = 443
+
+[listeners.tls]
+mode = "acme"
+acme_domains = ["git.example.com"]
+acme_cache_dir = "/var/lib/reverse-proxy/acme-cache"
+acme_directory = "production"
+
+[[listeners.sites]]
+host = "git.example.com"
+upstream = "gitea:3000"    # Docker DNS resolves this
+```
+
+### fail2ban Integration
+
+In container deployments, fail2ban runs on the host and reads the proxy's log
+file from the volume mount:
+
+```
+/var/log/reverse-proxy/access.log  →  fail2ban filter  →  iptables/nftables
+```
+
+This is simpler and more reliable than parsing Docker log drivers. The log
+file is the authoritative source for rate limit events and access logs.
+
+### Health Check
+
+Docker's native `HEALTHCHECK` uses the local health endpoint:
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD wget -q --spider http://127.0.0.1:9900/health || exit 1
+```
+
+No port publishing is needed — the health check runs inside the container.
+
+### SSH Traffic
+
+SSH traffic for Git operations is not proxied through the reverse proxy. It
+continues to be routed directly to the Gitea container via Docker port
+publishing (e.g., `203.0.113.10:22:2222`), matching the current deployment
+pattern.
 
 ## Design Decisions
 
@@ -260,6 +455,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [009](decisions/009-signal-handling.md) | Signal handling strategy | signal-hook for SIGTERM/SIGINT/SIGHUP |
 | [013](decisions/013-health-check-port.md) | Health check on separate local port | Localhost-only HTTP health check, configurable port |
 | [014](decisions/014-unix-socket-reload.md) | Unix domain socket config reload API | Programmatic reload with success/failure feedback |
+| [020](decisions/020-container-deployment.md) | Container deployment model | Defense-in-depth via container isolation; file-primary logging |
 
 ## Open Questions
 
