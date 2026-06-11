@@ -131,11 +131,11 @@ specified, defaults of 5s connect and 60s request are used.
 
 ### 5. HTTP → HTTPS Redirect
 
-A separate HTTP listener on port 80 handles redirect. It reads the `Host`
-header from the incoming request and returns a 301 Permanent Redirect to the
-HTTPS equivalent URL (preserving the path and query string).
+A separate HTTP listener on port 80 (per listener) handles redirect. It reads
+the `Host` header from the incoming request and returns a 301 Permanent Redirect
+to the HTTPS equivalent URL (preserving the path and query string).
 
-This listener runs on the same bind address as the TLS listener but on port 80.
+Each listener has its own HTTP redirect on its own bind address.
 
 ## Upstream Connection
 

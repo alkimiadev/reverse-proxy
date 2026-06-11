@@ -19,35 +19,49 @@ upstream services. It replaces nginx's `ssl_certificate`, `ssl_protocols`, and
 
 ## Architecture
 
+The proxy supports multiple independent TLS listeners, each with its own bind
+address, TLS configuration, and site routing. See ADR-019 for the rationale.
+
 ```
                     ┌──────────────────────────────────────────┐
                     │          TLS Termination                   │
                     │                                            │
-  bind_addr:443 ──► │  TcpListener::bind(bind_addr)             │
-                    │       │                                    │
-                    │       ▼                                    │
-                    │  tokio-rustls::TlsAcceptor                 │
-                    │       │                                    │
-                    │       ├─ ACME mode:                        │
-                    │       │  rustls-acme::ResolvesServerCertAcme │
-                    │       │  (auto-provisions & renews certs)   │
-                    │       │                                    │
-                    │       └─ Manual mode:                        │
-                    │          rustls::ServerConfig               │
-                    │          .with_single_cert(cert_chain, key) │
+                    │  ┌─ Listener 1 ─────────────────────────┐ │
+                    │  │  bind_addr_1:443                       │ │
+                    │  │  TcpListener::bind(bind_addr_1)       │ │
+                    │  │       │                               │ │
+                    │  │       ▼                               │ │
+                    │  │  tokio-rustls::TlsAcceptor            │ │
+                    │  │       │                               │ │
+                    │  │  ACME or Manual TLS config            │ │
+                    │  │  (per-listener TLS mode)              │ │
+                    │  │       │                               │ │
+                    │  │       ▼                               │ │
+                    │  │  TlsStream<TcpStream>                 │ │
+                    │  │       │                               │ │
+                    │  │       ▼                               │ │
+                    │  │  axum router (per-listener sites)     │ │
+                    │  └───────────────────────────────────────┘ │
                     │                                            │
-                    │       │                                    │
-                    │       ▼                                    │
-                    │  TlsStream<TcpStream>                      │
-                    │       │                                    │
-                    │       ▼                                    │
-                    │  hyper::service_fn → axum router            │
+                    │  ┌─ Listener N ─────────────────────────┐ │
+                    │  │  bind_addr_N:443                       │ │
+                    │  │  ... (same structure)                  │ │
+                    │  └───────────────────────────────────────┘ │
                     └──────────────────────────────────────────┘
 
   bind_addr:80  ──►  HTTP listener (redirect to HTTPS, no TLS)
 ```
 
+Each listener is independently configured. This supports two deployment models:
+
+1. **Shared-IP multi-domain**: One listener with multiple domains in
+   `acme_domains`, using a single SAN certificate and SNI routing.
+2. **Dedicated-IP single-domain**: Multiple listeners, each with its own IP,
+   its own TLS certificate, and its own site. No SNI needed.
+
 ## Certificate Provisioning
+
+Each listener has its own TLS mode (ACME or manual), configured independently.
 
 ### ACME Mode (Primary)
 
@@ -57,12 +71,14 @@ no deploy hooks.
 
 **How it works:**
 
-1. `AcmeCertProvider` configures the ACME client with the domain list, cache
-   directory, and Let's Encrypt directory (staging or production).
-2. `AcmeConfig::new(domains)` creates an ACME configuration for all listed
-   domains. Let's Encrypt will issue a single SAN certificate covering all
-   domains.
-3. The ACME state machine runs as a background tokio task, handling:
+1. Each listener in ACME mode creates its own `AcmeCertProvider` with the
+   listener's domain list, cache directory, and Let's Encrypt directory.
+2. `AcmeConfig::new(domains)` creates an ACME configuration for the domains
+   listed in that listener's `acme_domains`. Let's Encrypt will issue a
+   certificate covering those domains (a single SAN certificate or a
+   single-domain certificate, depending on how many domains are listed).
+3. The ACME state machine runs as a background tokio task per listener,
+   handling:
    - Account registration with Let's Encrypt
    - Certificate ordering
    - TLS-ALPN-01 challenge (or HTTP-01 challenge)
@@ -73,10 +89,13 @@ no deploy hooks.
 5. When a new certificate is issued, the resolver updates atomically — no
    restart or signal handling needed.
 
-**Configuration:**
+**Configuration (within a `[[listeners]]` entry):**
 
 ```toml
-[server.tls]
+[[listeners]]
+bind_addr = "203.0.113.10"
+
+[listeners.tls]
 mode = "acme"
 acme_domains = ["git.alk.dev", "alk.dev"]
 acme_cache_dir = "/var/lib/reverse-proxy/acme-cache"
@@ -85,7 +104,8 @@ acme_directory = "production"  # or "staging" for testing
 
 **Cache directory:** The `DirCache` from rustls-acme persists ACME account data,
 private keys, and certificates between restarts. This avoids re-provisioning on
-every restart.
+every restart. Each listener should use its own cache directory to avoid conflicts
+between separate ACME state machines.
 
 ### Manual Mode (Fallback)
 
@@ -94,10 +114,13 @@ corporate CAs, or BYO certificates), the proxy loads certificates from file
 paths at startup.
 
 ```toml
-[tls]
+[[listeners]]
+bind_addr = "203.0.113.11"
+
+[listeners.tls]
 mode = "manual"
-cert_path = "/etc/letsencrypt/live/git.alk.dev/fullchain.pem"
-key_path = "/etc/letsencrypt/live/git.alk.dev/privkey.pem"
+cert_path = "/etc/ssl/alk.dev/fullchain.pem"
+key_path = "/etc/ssl/alk.dev/privkey.pem"
 ```
 
 Certificate files are loaded once at startup using `rustls_pemfile`. Manual
@@ -138,27 +161,42 @@ parity during migration.
 
 ### ServerConfig Construction
 
+Each listener constructs its own `ServerConfig` based on its TLS mode.
+
 For manual mode, the `ServerConfig` is built with `with_no_client_auth()` and
-a custom `ResolvesServerCert` implementation that maps SNI hostnames to
-certificate/key pairs loaded from disk.
+the loaded certificate chain and private key. If the listener serves multiple
+domains from a single listener, a custom `ResolvesServerCert` implementation
+maps SNI hostnames to certificate/key pairs loaded from disk.
 
 For ACME mode, the `ServerConfig` is built with `with_cert_resolver()`, passing
-the `ResolvesServerCertAcme` resolver. The ACME configuration includes all
-domains listed in `acme_domains`, and the resolver manages a single SAN
-certificate covering all of them. The ACME TLS-ALPN-01 protocol identifier
-(`acme-tls/1`) must be registered in the `alpn_protocols` list so the server
-can respond to TLS-ALPN-01 challenges.
+the `ResolvesServerCertAcme` resolver. The ACME configuration includes the
+domains listed in that listener's `acme_domains`, and the resolver manages the
+certificate. The ACME TLS-ALPN-01 protocol identifier (`acme-tls/1`) must be
+registered in the `alpn_protocols` list so the server can respond to
+TLS-ALPN-01 challenges.
 
 Both modes use the `aws_lc_rs` crypto provider with safe default protocol
 versions (TLS 1.2 and TLS 1.3).
 
 ## SNI-Based Certificate Selection
 
-### ACME Mode (Multi-Domain)
+### Dedicated-IP Single-Domain (Multi-Config)
+
+In the dedicated-IP model, each listener binds to its own IP address and serves
+exactly one domain with one certificate. SNI is not required for certificate
+selection — the listener's TLS config already has the correct certificate.
+
+This is the simplest case: one IP, one listener, one certificate, one domain.
+No SNI resolution logic is needed.
+
+### Shared-IP Multi-Domain (SAN Certificate)
+
+In the shared-IP model, a single listener serves multiple domains using a SAN
+certificate. SNI-based certificate selection is required.
 
 In ACME mode, `rustls-acme` manages a single SAN certificate covering all
-configured domains. The `ResolvesServerCertAcme` resolver automatically serves
-the correct certificate during the TLS handshake.
+configured domains for that listener. The `ResolvesServerCertAcme` resolver
+automatically serves the correct certificate during the TLS handshake.
 
 1. **TLS handshake**: The client sends the SNI extension indicating which
    hostname it's connecting to.
@@ -172,10 +210,11 @@ This is the same pattern nginx uses — SNI selects the cert during TLS, then
 `Host` header selects the server block. ACME mode handles this automatically
 through the cert resolver.
 
-### Manual Mode (Multi-Domain)
+### Manual Mode with Multiple Domains
 
-In manual mode, a custom `ResolvesServerCert` implementation is required to
-map SNI hostnames to the correct `CertifiedKey`. This implementation:
+In manual mode on a shared-IP listener, a custom `ResolvesServerCert`
+implementation maps SNI hostnames to the correct `CertifiedKey`. This
+implementation:
 
 1. Loads certificate files at startup (or on SIGHUP for reload)
 2. Maps each domain name to its certificate chain and private key
@@ -183,17 +222,17 @@ map SNI hostnames to the correct `CertifiedKey`. This implementation:
    matching `CertifiedKey`
 
 The custom resolver must handle the case where no matching certificate exists
-for the SNI hostname — in this case, the handshake fails, which is the
-correct behavior (we don't serve a default certificate for unknown domains).
-
-See [open-questions.md](open-questions.md) OQ-07 for per-site TLS overrides.
+for the SNI hostname — in this case, the handshake fails, which is the correct
+behavior (we don't serve a default certificate for unknown domains).
 
 ## HTTP Listener (Port 80)
 
-The HTTP listener on port 80 is a plain TCP listener with no TLS. It has one
-job: redirect all requests to the HTTPS equivalent.
+Each listener has its own HTTP listener on port 80 (or the configured
+`http_port`). It is a plain TCP listener with no TLS. It has one job: redirect
+all requests to the HTTPS equivalent.
 
-The listener binds to the same IP address as the TLS listener, but on port 80.
+Each HTTP listener binds to the same IP address as its corresponding TLS
+listener, but on port 80.
 
 ### ACME Challenge Type
 
@@ -225,6 +264,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [010](decisions/010-multi-site-phase1.md) | Multi-site in Phase 1 | Multiple domains from initial release |
 | [011](decisions/011-multi-domain-tls.md) | Multi-domain TLS config | Single SAN certificate covering all domains via rustls-acme |
 | [012](decisions/012-cipher-suite-restriction.md) | Restrict cipher suites | Match nginx scope: four ECDHE-AES-GCM suites for TLS 1.2, all TLS 1.3 suites |
+| [019](decisions/019-multi-config-listeners.md) | Multi-config listeners | `[[listeners]]` supporting both dedicated-IP and shared-IP deployment models |
 
 ## Open Questions
 
@@ -232,5 +272,4 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key
 questions affecting this document:
 
 - ~~**OQ-01**: Should cipher suites be restricted beyond rustls defaults?~~ (resolved — ADR-012: restrict to nginx scope)
-- **OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual
-  domains? (open)
+- ~~**OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual domains?~~ (resolved — ADR-019: `[[listeners]]` with per-listener TLS config)

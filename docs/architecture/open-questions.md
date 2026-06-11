@@ -27,19 +27,19 @@ last_updated: 2026-06-11
   See ADR-007.
 - **Cross-references**: ADR-007
 
-### OQ-07: Should per-site TLS overrides be supported for mixed ACME/manual domains?
+### ~~OQ-07: Should per-site TLS overrides be supported for mixed ACME/manual domains?~~
 
 - **Origin**: [tls.md](tls.md), [config.md](config.md)
-- **Status**: open
+- **Status**: resolved
 - **Priority**: low
-- **Context**: Phase 1 uses a single TLS configuration (ACME or manual) for all
-  domains. All domains share the same ACME config and certificate. If a future
-  domain needs a manual certificate (e.g., a corporate CA cert) while other
-  domains use ACME, a per-site TLS override would be needed. This would require
-  a custom `ResolvesServerCert` that combines ACME-provisioned certs with
-  manually loaded certs. For now, all proxied domains use the same ACME config,
-  so this is not needed.
-- **Cross-references**: ADR-011
+- **Resolution**: Resolved by introducing `[[listeners]]` configuration. Each
+  listener is an independent TLS endpoint with its own bind address, TLS config,
+  and site routing. This supports both deployment models: (1) shared-IP
+  multi-domain (one listener, SAN certificate, SNI routing) and (2) dedicated-IP
+  single-domain (multiple listeners, each with its own IP/cert/domain). Mixed
+  ACME/manual configurations are naturally supported since each listener has its
+  own TLS mode. See ADR-019.
+- **Cross-references**: ADR-011, ADR-019
 
 ## Logging and Monitoring
 
@@ -73,11 +73,12 @@ last_updated: 2026-06-11
 - **Origin**: [overview.md](overview.md)
 - **Status**: resolved
 - **Priority**: low
-- **Resolution**: A single `bind_addr` is sufficient. The proxy binds to one
-  explicit IP address (not `0.0.0.0`). Multi-address binding is not needed for
-  this single-server deployment. If needed in the future, `bind_addr` could be
-  extended to an array. See config.md for the `bind_addr` field.
-- **Cross-references**: ADR-016
+- **Resolution**: A single `bind_addr` per listener entry is sufficient. ADR-019
+  introduced `[[listeners]]`, where each listener has its own `bind_addr`. This
+  supports multiple bind addresses in a single process — one per listener —
+  without needing an array of addresses on a single listener. See ADR-016 and
+  ADR-019.
+- **Cross-references**: ADR-016, ADR-019
 
 ## Proxy
 

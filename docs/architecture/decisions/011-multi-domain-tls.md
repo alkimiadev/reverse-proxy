@@ -30,22 +30,21 @@ certificate covering all proxied domains. Manual mode uses certificate file
 paths (single cert file with all domains, or one cert per domain resolved via
 SNI).
 
-The config format changes from the previous single-domain format:
+With ADR-019, TLS configuration lives inside `[[listeners]]` entries. Each
+listener has its own TLS mode and domain list. The config format is:
 
 ```toml
-# Previous (single-domain) format — no longer used
-[tls]
-mode = "acme"
-acme_domain = "git.alk.dev"  # single string
-```
+# Current format (after ADR-019)
+[[listeners]]
+bind_addr = "203.0.113.10"
 
-To the current multi-domain format:
-
-```toml
-[tls]
+[listeners.tls]
 mode = "acme"
 acme_domains = ["git.alk.dev", "alk.dev"]  # array of strings
 ```
+
+The previous single-listener format (pre-ADR-019) used a `[server.tls]` section
+which is no longer valid.
 
 In ACME mode, `rustls-acme` provisions a single certificate covering all
 listed domains via Subject Alternative Names (SAN). This is the standard
@@ -82,7 +81,7 @@ certificate or separate certificates resolved via SNI).
   domains must be validated) — mitigated by Let's Encrypt's domain-level
   validation
 - Per-site TLS configuration (e.g., a domain with a manual cert) requires a
-  future config extension (OQ-07)
+  future config extension — addressed by ADR-019 (multi-config listeners)
 
 ## References
 
@@ -90,3 +89,4 @@ certificate or separate certificates resolved via SNI).
 - [config.md](../config.md)
 - ADR-010 (multi-site in Phase 1)
 - ADR-004 (ACME-primary certificate management)
+- ADR-019 (multi-config listener support)

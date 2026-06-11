@@ -18,8 +18,9 @@ deployment.
 
 ## Decision
 
-The `bind_addr` field must be an explicit IP address. `0.0.0.0` is rejected
-during config validation. The proxy will not start if `bind_addr` is `0.0.0.0`.
+The `bind_addr` field on each `[[listeners]]` entry must be an explicit IP
+address. `0.0.0.0` is rejected during config validation. The proxy will not
+start if any listener's `bind_addr` is `0.0.0.0`.
 
 ## Rationale
 

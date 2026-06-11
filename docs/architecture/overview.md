@@ -38,8 +38,11 @@ details.
 ### In Scope
 
 - **Phase 1**: Multi-site reverse proxy with TLS termination
-  - TLS termination with ACME (Let's Encrypt) multi-domain certificate management
-  - Manual certificate paths as fallback mode
+  - Multiple independent TLS listeners via `[[listeners]]` configuration
+  - Each listener has its own bind address, TLS config, and site routing
+  - Supports both dedicated-IP (1 IP = 1 cert = 1 domain) and shared-IP
+    (SAN certificate) deployment models (ADR-019)
+  - TLS termination with ACME (Let's Encrypt) and manual certificate management
   - Cipher suite restriction matching nginx scope (ECDHE-AES-GCM + TLS 1.3)
   - HTTP → HTTPS redirect
   - Host-based routing to multiple upstream services
@@ -49,7 +52,7 @@ details.
   - Per-site upstream timeouts with sensible defaults (5s connect, 60s request)
   - Request rate limiting with fail2ban-compatible logging (global per-IP)
   - 100 MB body size limit (global)
-  - Configurable bind address (must be explicit, no `0.0.0.0`)
+  - Configurable bind addresses (must be explicit, no `0.0.0.0`)
   - Local health check endpoint on separate port (default: 9900, localhost only)
   - Unix domain socket admin API for config reload with feedback
   - Graceful shutdown (SIGTERM handling)
@@ -64,7 +67,6 @@ details.
 
 - **Phase 3**: Future enhancements
   - Wildcard subdomain support
-  - Per-site TLS overrides (manual certs for specific domains)
 
 ### Out of Scope
 
@@ -75,36 +77,37 @@ details.
 - Static file serving
 - Access control beyond rate limiting (no auth, no IP allowlists in Phase 1)
 - CGI, SCGI, uWSGI, FastCGI
-- Per-site TLS configuration (all domains share one ACME config in Phase 1)
 
 ## Architecture
 
 ```
                      ┌────────────────────────────────────┐
                      │     reverse-proxy (Rust/axum)       │
-config.toml ──────► │  StaticConfig + DynamicConfig       │
+config.toml ───────► │  StaticConfig + DynamicConfig       │
                      │  (ArcSwap for hot-reload)            │
                      │                                      │
-bind_addr:80   ──►  │  HTTP listener → 301 redirect        │
-                     │     to HTTPS                         │
+                     │  ┌─ Listener 1 ─────────────────┐   │
+bind_addr_1:80  ───► │  │  HTTP → 301 redirect           │   │
+                     │  └────────────────────────────────┘   │
+bind_addr_1:443 ───► │  │  TLS listener (tokio-rustls)    │   │
+                     │  │  ├─ ACME or Manual TLS config    │   │
+                     │  │  └─ axum router                  │   │
+                     │  │     ├─ Host-based routing         │   │
+                     │  │     ├─ git.alk.dev → :3000       │   │
+                     │  │     └─ Rate limiting, headers     │   │
+                     │  └────────────────────────────────┘   │
                      │                                      │
-bind_addr:443  ──►  │  TLS listener (tokio-rustls)         │
-                     │  ├─ ACME mode: rustls-acme resolver  │
-                     │  │  (multi-domain SAN cert,           │
-                     │  │   auto-provision & renew)          │
-                     │  └─ Manual mode: cert/key file paths  │
+                     │  ┌─ Listener N ─────────────────┐   │
+bind_addr_N:80  ───► │  │  HTTP → 301 redirect           │   │
+                     │  └────────────────────────────────┘   │
+bind_addr_N:443 ───► │  │  TLS listener (tokio-rustls)    │   │
+                     │  │  ├─ Manual TLS cert             │   │
+                     │  │  └─ axum router                  │   │
+                     │  │     ├─ alk.dev → :8080           │   │
+                     │  │     └─ Rate limiting, headers     │   │
+                     │  └────────────────────────────────┘   │
                      │                                      │
-                     │  axum router                         │
-                     │  ├─ Host-based routing                │
-                     │  │  ├─ git.alk.dev → :3000            │
-                     │  │  └─ alk.dev     → :8080            │
-                     │  ├─ Rate limiting middleware          │
-                     │  ├─ Proxy header injection            │
-                     │  ├─ Body size limit (100MB)           │
-                     │  └─ Reverse proxy handler             │
-                     │     └─ hyper Client → upstream        │
-                     │                                      │
-                     │  /health → 200 OK                    │
+                     │  /health → 200 OK (port 9900)        │
                      └────────────────────────────────────┘
 ```
 
@@ -176,6 +179,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [016](decisions/016-explicit-bind-address.md) | Explicit bind address required | Rejects `0.0.0.0` to prevent accidental exposure |
 | [017](decisions/017-upstream-connection-defaults.md) | Upstream connection defaults | HTTP/1.1, no redirects, connection pooling |
 | [018](decisions/018-body-size-limit.md) | Request body size limit | 100 MB default matching nginx, Gitea push compatibility |
+| [019](decisions/019-multi-config-listeners.md) | Multi-config listeners | `[[listeners]]` supporting both dedicated-IP and shared-IP deployment models |
 
 ## Open Questions
 
@@ -184,4 +188,4 @@ questions affecting this document:
 
 - ~~**OQ-01**: Should cipher suites be restricted beyond rustls defaults?~~ (resolved — ADR-012)
 - ~~**OQ-03**: Should the health check endpoint be on a separate port?~~ (resolved — ADR-013)
-- **OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual domains? (open)
+- ~~**OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual domains?~~ (resolved — ADR-019: `[[listeners]]` with per-listener TLS config)

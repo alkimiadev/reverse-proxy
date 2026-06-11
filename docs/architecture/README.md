@@ -50,6 +50,7 @@ certificate via ACME.
 | [016](decisions/016-explicit-bind-address.md) | Explicit Bind Address Requirement | Accepted |
 | [017](decisions/017-upstream-connection-defaults.md) | Upstream Connection Defaults | Accepted |
 | [018](decisions/018-body-size-limit.md) | Request Body Size Limit | Accepted |
+| [019](decisions/019-multi-config-listeners.md) | Multi-Config Listener Support | Accepted |
 
 ## Open Questions
 
@@ -63,7 +64,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 | ~~OQ-04~~ | ~~Config reload: SIGHUP only or also Unix socket API?~~ | ~~low~~ | **resolved** (ADR-014) |
 | ~~OQ-05~~ | ~~Should the proxy bind to multiple addresses?~~ | ~~low~~ | **resolved** (single bind_addr sufficient) |
 | ~~OQ-06~~ | ~~Should upstream timeouts be configurable per-site?~~ | ~~low~~ | **resolved** (ADR-015) |
-| OQ-07 | Should per-site TLS overrides be supported for mixed ACME/manual domains? | low | open |
+| ~~OQ-07~~ | ~~Should per-site TLS overrides be supported for mixed ACME/manual domains?~~ | ~~low~~ | **resolved** (ADR-019) |
 
 ## Document Lifecycle
 

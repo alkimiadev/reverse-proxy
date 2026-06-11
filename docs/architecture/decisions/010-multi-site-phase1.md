@@ -31,7 +31,8 @@ and `rustls-acme` supports multi-domain certificates natively.
 Move multi-site support from Phase 2 into Phase 1. The proxy supports multiple
 sites from the initial release:
 
-- `[[sites]]` array in config (already the planned format)
+- `[[listeners.sites]]` array in each listener config (after ADR-019; was
+  `[[sites]]` at top level)
 - Host-based routing via axum's `Host` extractor (already the planned approach)
 - Multi-domain ACME certificate provisioning via `rustls-acme`
 - Each site maps a hostname to an upstream address
@@ -78,8 +79,7 @@ Phase 3 remains future enhancements.
 - Slightly more testing surface (must verify correct routing with multiple
   sites)
 - Must test multi-domain ACME provisioning (not just single-domain)
-- Wildcard or fallback site behavior needs to be defined (addressed in
-  OQ-07)
+- Wildcard or fallback site behavior is defined by the listener's site routing
 
 ## References
 

@@ -31,29 +31,53 @@ config.toml
 └──────────┬───────────┘
            │
            ▼
-┌──────────────────────┐     ┌──────────────────────┐
-│  StaticConfig         │     │  DynamicConfig        │
-│  (immutable)         │     │  (hot-reloadable)     │
-│                      │     │                       │
-│  bind_addr           │     │  sites[]              │
-│  http_port           │     │  rate_limit           │
-│  https_port          │     │  body_limit           │
-│  health_check_port   │     │  proxy_headers        │
-│  admin_socket_path   │     │                       │
-│  tls.mode            │     │  ← ArcSwap →          │
-│  tls.acme_domains    │     │                       │
-│  tls.cert_path       │     │  ← ArcSwap →          │
-│  tls.key_path        │     │  ConfigReloadHandle    │
-│  tls.cache_dir       │     │  .reload(new_config)  │
-│  log_level           │     │                       │
-│  log_format          │     └───────────────────────┘
+┌──────────────────────┐
+│  StaticConfig         │
+│  (immutable)         │
+│                      │
+│  health_check_port   │
+│  admin_socket_path   │
+│  log_level           │
+│  log_format          │
+│                      │
+│  listeners[]         │
+│  ┌────────────────┐  │
+│  │ Listener 1      │  │
+│  │ bind_addr       │  │
+│  │ http_port       │  │
+│  │ https_port      │  │
+│  │ tls.mode        │  │
+│  │ tls.acme_domains│  │
+│  │ tls.acme_cache_dir│ │
+│  │ tls.acme_directory│ │
+│  │ tls.cert_path   │  │
+│  │ tls.key_path    │  │
+│  └────────────────┘  │
+│  ┌────────────────┐  │
+│  │ Listener N      │  │
+│  │ ...             │  │
+│  └────────────────┘  │
 └──────────────────────┘
+
+┌──────────────────────┐
+│  DynamicConfig        │
+│  (hot-reloadable)     │
+│                       │
+│  sites[]              │
+│  rate_limit           │
+│  body_limit           │
+│                       │
+│  ← ArcSwap →          │
+│  ConfigReloadHandle    │
+│  .reload(new_config)  │
+└───────────────────────┘
 ```
 
 ## Static vs Dynamic Configuration
 
 This split follows the pattern established in alknet (ADR-030) and adapted
-for our simpler use case.
+for our simpler use case. See ADR-019 for the rationale behind the
+`[[listeners]]` configuration format.
 
 ### StaticConfig
 
@@ -61,24 +85,30 @@ Immutable after startup. Changes require a process restart.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `listeners` | `Vec<ListenerConfig>` | Independent TLS endpoints, each with its own bind address and TLS config (see ADR-019) |
+| `health_check_port` | `u16` | Port for local health check endpoint (default: `9900`; set to `0` to disable; see ADR-013) |
+| `admin_socket_path` | `String` | Unix domain socket path for admin API (default: `/run/reverse-proxy/admin.sock`; empty string to disable; see ADR-014) |
+| `log_level` | `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` | Logging verbosity |
+| `log_format` | `"text"` or `"json"` | Log output format |
+
+**ListenerConfig** (per-listener static config):
+
+| Field | Type | Description |
+|-------|------|-------------|
 | `bind_addr` | `String` | IP address to bind to (must be explicit, no `0.0.0.0`; see ADR-016) |
 | `http_port` | `u16` | Port for HTTP→HTTPS redirect (default: `80`; set to `0` to disable) |
 | `https_port` | `u16` | Port for TLS listener (default: `443`) |
-| `health_check_port` | `u16` | Port for local health check endpoint (default: `9900`; set to `0` to disable; see ADR-013) |
-| `admin_socket_path` | `String` | Unix domain socket path for admin API (default: `/run/reverse-proxy/admin.sock`; empty string to disable; see ADR-014) |
 | `tls.mode` | `"acme"` or `"manual"` | Certificate provisioning mode |
 | `tls.acme_domains` | `Vec<String>` | Domains for ACME SAN certificate (ACME mode only) |
 | `tls.acme_cache_dir` | `String` | ACME state cache directory |
 | `tls.acme_directory` | `"production"` or `"staging"` | Let's Encrypt directory |
 | `tls.cert_path` | `String` | Certificate file path (manual mode only) |
 | `tls.key_path` | `String` | Private key file path (manual mode only) |
-| `log_level` | `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` | Logging verbosity |
-| `log_format` | `"text"` or `"json"` | Log output format |
 
-**Why these are static:** See ADR-008 for the rationale behind the
-static/dynamic split. In summary: changing bind addresses, ports, or TLS mode
-requires creating new listeners and TLS configurations — operations that
-fundamentally require a restart.
+**Why listeners are static:** Each listener requires binding a TCP socket and
+constructing a TLS acceptor — operations that fundamentally require a restart.
+Changing a listener's bind address, TLS mode, or certificate configuration
+cannot be done without creating new listeners. See ADR-008 and ADR-019.
 
 ### DynamicConfig
 
@@ -100,7 +130,12 @@ connections immediately.
 | `upstream` | `String` | Upstream address (e.g., `"127.0.0.1:3000"`) |
 | `upstream_scheme` | `"http"` or `"https"` | Protocol for upstream connection (default: `"http"`) |
 | `upstream_connect_timeout_secs` | `u64` | TCP connect timeout in seconds (default: `5`; see ADR-015, ADR-017) |
-| `upstream_request_timeout_secs` | `u64` | Full request timeout in seconds (default: `60`; see ADR-015, ADR-017) | |
+| `upstream_request_timeout_secs` | `u64` | Full request timeout in seconds (default: `60`; see ADR-015, ADR-017) |
+
+Sites are defined per listener in the `[[listeners]]` entries. Each listener
+routes its own sites independently. The `DynamicConfig` collects all sites
+across all listeners for hot-reload via `ArcSwap`. When a config reload
+occurs, all listener site mappings are updated atomically.
 
 **Why these are dynamic:** See ADR-008 for the rationale. Site definitions
 and rate limits are per-request concerns that should not require restarting
@@ -145,28 +180,19 @@ Both mechanisms converge on the same code path:
 
 ## TOML Config Format
 
+### Multi-Config (Dedicated-IP Per Domain)
+
+The primary deployment model — each listener on its own IP with its own TLS
+certificate:
+
 ```toml
 # reverse-proxy config
 
-[server]
-bind_addr = "203.0.113.10"  # Replace with actual bind address
-http_port = 80
-https_port = 443
+# Global settings
 health_check_port = 9900     # Local health check (0 to disable)
 admin_socket_path = "/run/reverse-proxy/admin.sock"  # Empty string to disable
 
-[server.tls]
-mode = "acme"                    # "acme" or "manual"
-acme_domains = ["git.alk.dev", "alk.dev"]
-acme_cache_dir = "/var/lib/reverse-proxy/acme-cache"
-acme_directory = "production"    # "production" or "staging"
-
-# Manual mode (uncomment and comment out ACME settings)
-# mode = "manual"
-# cert_path = "/etc/letsencrypt/live/git.alk.dev/fullchain.pem"
-# key_path = "/etc/letsencrypt/live/git.alk.dev/privkey.pem"
-
-[server.logging]
+[logging]
 level = "info"
 format = "text"                  # "text" or "json"
 
@@ -177,31 +203,100 @@ burst = 20
 [body]
 limit_bytes = 104857600          # 100 MB
 
-[[sites]]
+# Listener 1: git.alk.dev on its own IP
+[[listeners]]
+bind_addr = "203.0.113.10"
+http_port = 80
+https_port = 443
+
+[listeners.tls]
+mode = "acme"
+acme_domains = ["git.alk.dev"]
+acme_cache_dir = "/var/lib/reverse-proxy/acme-cache-git"
+acme_directory = "production"
+
+[[listeners.sites]]
 host = "git.alk.dev"
 upstream = "127.0.0.1:3000"
 upstream_scheme = "http"
 # upstream_connect_timeout_secs = 5    # Default: 5s
-# upstream_request_timeout_secs = 60   # Default: 60s
+# upstream_request_timeout_secs = 60    # Default: 60s
 
-[[sites]]
+# Listener 2: alk.dev on its own IP with a manual certificate
+[[listeners]]
+bind_addr = "203.0.113.11"
+http_port = 80
+https_port = 443
+
+[listeners.tls]
+mode = "manual"
+cert_path = "/etc/ssl/alk.dev/fullchain.pem"
+key_path = "/etc/ssl/alk.dev/privkey.pem"
+
+[[listeners.sites]]
 host = "alk.dev"
 upstream = "127.0.0.1:8080"
 upstream_scheme = "http"
+```
+
+### Shared-IP Multi-Domain (SAN Certificate)
+
+A single listener serving multiple domains with one SAN certificate:
+
+```toml
+# Global settings
+health_check_port = 9900
+admin_socket_path = "/run/reverse-proxy/admin.sock"
+
+[logging]
+level = "info"
+format = "text"
+
+[rate_limit]
+requests_per_second = 10
+burst = 20
+
+[body]
+limit_bytes = 104857600
+
+# Single listener with multi-domain SAN certificate
+[[listeners]]
+bind_addr = "203.0.113.10"
+http_port = 80
+https_port = 443
+
+[listeners.tls]
+mode = "acme"
+acme_domains = ["git.alk.dev", "alk.dev"]
+acme_cache_dir = "/var/lib/reverse-proxy/acme-cache"
+acme_directory = "production"
+
+[[listeners.sites]]
+host = "git.alk.dev"
+upstream = "127.0.0.1:3000"
+
+[[listeners.sites]]
+host = "alk.dev"
+upstream = "127.0.0.1:8080"
 ```
 
 ### Validation
 
 On startup, the config is validated:
 
-1. `bind_addr` is not `0.0.0.0` (must be explicit)
-2. In ACME mode, `acme_domains` must be non-empty
-3. In manual mode, `cert_path` and `key_path` must both be set and the files
+1. At least one `[[listeners]]` entry must exist
+2. Each listener's `bind_addr` is not `0.0.0.0` (must be explicit; see ADR-016)
+3. Each listener's `bind_addr` and `https_port` combination must be unique
+4. In ACME mode, `acme_domains` must be non-empty
+5. In manual mode, `cert_path` and `key_path` must both be set and the files
    must be readable
-4. Each site must have a `host` and `upstream`
-5. Site `host` values must be unique (no duplicate hostnames)
-6. `rate_limit.requests_per_second` must be > 0
-7. `body.limit_bytes` must be > 0
+6. Each site must have a `host` and `upstream`
+7. Site `host` values must be unique across all listeners (no duplicate
+   hostnames, even across different listeners). Duplicate hostnames would create
+   ambiguous routing — the proxy would not know which listener's upstream to
+   route a request to when the `Host` header matches multiple sites.
+8. `rate_limit.requests_per_second` must be > 0
+9. `body.limit_bytes` must be > 0
 
 On SIGHUP reload, the same validation applies. If the new config fails
 validation, the reload is rejected and the old config remains active. An error
@@ -225,6 +320,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [014](decisions/014-unix-socket-reload.md) | Unix domain socket config reload API | Programmatic reload with success/failure feedback |
 | [015](decisions/015-per-site-timeouts.md) | Per-site upstream timeouts with defaults | 5s connect / 60s request defaults, per-site overrides |
 | [016](decisions/016-explicit-bind-address.md) | Explicit bind address required | Rejects `0.0.0.0` to prevent accidental exposure |
+| [019](decisions/019-multi-config-listeners.md) | Multi-config listeners | `[[listeners]]` supporting both dedicated-IP and shared-IP deployment models |
 
 ## Open Questions
 
@@ -233,5 +329,5 @@ questions affecting this document:
 
 - ~~**OQ-04**: Should config reload support a Unix domain socket API in addition
   to SIGHUP?~~ (resolved — ADR-014: Unix domain socket admin API added)
-- **OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual
-  domains? (open)
+- ~~**OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual
+  domains?~~ (resolved — ADR-019: `[[listeners]]` with per-listener TLS config)
