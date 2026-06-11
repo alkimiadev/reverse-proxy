@@ -52,6 +52,7 @@ certificate via ACME.
 | [018](decisions/018-body-size-limit.md) | Request Body Size Limit | Accepted |
 | [019](decisions/019-multi-config-listeners.md) | Multi-Config Listener Support | Accepted |
 | [020](decisions/020-container-deployment.md) | Container Deployment Model | Accepted |
+| [021](decisions/021-x-forwarded-for-edge-proxy.md) | X-Forwarded-For Edge Proxy Model | Accepted |
 
 ## Open Questions
 

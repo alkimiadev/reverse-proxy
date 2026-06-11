@@ -243,6 +243,42 @@ suitable (e.g., behind a CDN that terminates TLS). When using HTTP-01, the
 port 80 listener serves `/.well-known/acme-challenge/{token}` paths for
 challenge verification.
 
+## Certificate Failure Behavior
+
+ACME certificate provisioning and renewal can fail for various reasons (network
+outages, Let's Encrypt unavailability, DNS issues, rate limiting). The proxy's
+behavior depends on the scenario:
+
+| Scenario | Behavior |
+|----------|----------|
+| First start, no cached cert, ACME unreachable | **Fail to start** with clear error message. The proxy cannot serve TLS without a certificate. |
+| First start, no cached cert, ACME succeeds | Normal startup. Certificate is provisioned and cached. |
+| Start with cached cert, ACME unreachable for renewal | **Start normally** with cached cert. Log error at `warn` level. `rustls-acme` retries per its built-in schedule. |
+| Renewal failure after startup | **Continue serving existing cert**. Log error at `warn` level. `rustls-acme` retries per its built-in schedule. |
+| Cached cert expired, renewal fails at startup | **Fail to start** if cert is expired at startup. An expired certificate cannot serve valid TLS. |
+| Cached cert expires during runtime | **Continue serving expired cert**. Clients will receive certificate errors. Log at `error` level. This is the correct behavior — silently dropping TLS would be worse. |
+
+The key principle: **never start without a valid TLS certificate**, but **always
+continue serving if a valid cert exists**, even if renewal fails.
+
+## TLS Error Handling
+
+TLS handshake failures are logged and the connection is closed. The proxy does
+not serve a default certificate for unknown hostnames — connections that don't
+match any configured certificate fail.
+
+| Scenario | Behavior |
+|----------|----------|
+| SNI hostname doesn't match any certificate (manual mode) | TLS handshake fails with `unrecognized_name` alert. Log at `warn` level with client IP and SNI hostname. |
+| No SNI extension sent by client | TLS handshake fails with `handshake_failure` alert. Log at `warn` level with client IP. |
+| Unsupported TLS version (1.0/1.1) | TLS handshake fails with `protocol_version` alert. Log at `info` level. |
+| Cipher suite negotiation fails | TLS handshake fails with `handshake_failure` alert. Log at `info` level with client IP. |
+| Certificate expired (manual mode) | Connection fails during TLS handshake. Log at `error` level. Other listeners/connections continue serving. |
+
+In ACME mode, the `ResolvesServerCertAcme` resolver handles certificate
+selection automatically — there is no SNI mismatch scenario because the
+resolver serves the ACME-provisioned certificate for all valid domains.
+
 ## Key Files and Crates
 
 | Component | Crate | Purpose |

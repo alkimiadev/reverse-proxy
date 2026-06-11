@@ -48,10 +48,12 @@ Phase 1 scope becomes:
 Phase 2 scope shifts to operational hardening:
 
 1. Per-site rate limits and body limits
-2. Per-site upstream timeouts
-3. Metrics endpoint (Prometheus-compatible)
-4. Connection limits and timeouts
-5. Log rotation
+2. Metrics endpoint (Prometheus-compatible)
+3. Connection limits and timeouts
+4. Log rotation
+
+Note: "Per-site upstream timeouts" was originally listed here but was moved to
+Phase 1 via ADR-015.
 
 Phase 3 remains future enhancements.
 

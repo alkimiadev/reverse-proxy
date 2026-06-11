@@ -36,6 +36,12 @@ Rate limits are global per-IP in Phase 1 (not per-site). A request from IP
 address X counts against the same bucket regardless of which site it targets.
 Per-site rate limits may be added in Phase 2.
 
+The token bucket uses **nodelay** semantics matching nginx's `limit_req burst
+nodelay`: when the bucket is empty, the request is immediately rejected with
+429 — requests are not queued. Tokens are added at a rate of
+`requests_per_second` (1 token every 1000ms / requests_per_second), and the
+bucket capacity is the `burst` value.
+
 When a request exceeds the rate limit, the middleware returns `429 Too Many
 Requests` and logs the event with structured fields.
 
@@ -46,6 +52,37 @@ background task runs every 60 seconds (configurable) and removes entries
 whose last access timestamp is older than a configurable eviction age
 (default: 300 seconds / 5 minutes). This prevents unbounded memory growth
 while preserving recent entries that may still receive traffic.
+
+### Config Reload Behavior
+
+When rate limit parameters change (e.g., from 10 req/s burst 20 to 20 req/s
+burst 40), the behavior is:
+
+1. New `DynamicConfig` is swapped in via ArcSwap.
+2. On the next request from an existing IP, the rate limiter reads the current
+   `DynamicConfig` for rate/burst parameters.
+3. The token bucket refills using the new rate, and its capacity is set to the
+   new burst maximum.
+4. If the current token count exceeds the new burst maximum, it is capped to
+   the new burst maximum.
+
+The HashMap is **not** cleared — this avoids creating a rate-limiting gap.
+Existing buckets adopt new parameters on their next request. The eviction task
+continues removing stale entries independently.
+
+### IPv6 Rate Limiting
+
+IPv6 addresses have a vastly larger address space than IPv4. Rate limiting per
+individual IPv6 address (`/128`) is ineffective against attackers who can
+generate many addresses within a `/64` prefix.
+
+- **IPv4**: Rate limited per individual address (`/32`).
+- **IPv6**: Rate limited per `/64` prefix. All addresses in the same `/64` share
+  the same token bucket. This matches RFC 4941 privacy extension boundaries and
+  common anti-abuse practice.
+
+The rate limiter normalizes IPv6 addresses to their `/64` prefix before
+bucket lookup.
 
 ### Fail2ban Integration
 
@@ -225,13 +262,46 @@ process does not exit on SIGHUP.
 
 The admin Unix domain socket provides programmatic config reload with feedback.
 This is useful for CI/CD pipelines and automation tools. See ADR-014 for the
-command protocol.
+rationale.
 
-### Timeout
+**Protocol:**
 
-In-flight requests have a configurable shutdown timeout (default: 30 seconds).
-After the timeout, remaining connections are forcefully closed and the process
-exits.
+- **Connection lifecycle**: One command per connection. Client connects, sends
+  one newline-terminated command, receives one newline-terminated JSON
+  response, then the server closes the connection.
+- **Message framing**: Newline-delimited (`\n`). Responses end with `\n`.
+- **Commands**:
+  - `reload` — Re-read config file, validate, and swap DynamicConfig. Returns
+    `{"status": "ok"}` or `{"status": "error", "message": "..."}`.
+  - `status` — Return basic process info. Returns
+    `{"status": "ok", "uptime_secs": 1234, "sites": 2}`.
+- **Error responses**: Unrecognized commands return
+  `{"status": "error", "message": "unknown command: <cmd>"}`. Invalid or empty
+  input returns `{"status": "error", "message": "invalid input"}`.
+- **Concurrency**: Multiple clients can connect simultaneously, but reload
+  operations are serialized (see Config Reload section in config.md).
+- **Socket cleanup**: The proxy removes any existing socket file at startup
+  before binding. If the file exists and another process is listening, a warning
+  is logged and the admin socket is disabled (but the proxy continues starting).
+
+### Shutdown Sequence
+
+On SIGTERM or SIGINT, the proxy performs a graceful shutdown:
+
+1. **Stop accepting new connections** — Close all TCP listening sockets. No new
+   connections are accepted.
+2. **Close idle keep-alive connections** — Send `Connection: close` on any idle
+   connections in the keep-alive pool.
+3. **Wait for in-flight requests** — Up to `shutdown_timeout_secs` (default: 30)
+   for active requests to complete.
+4. **Force-close remaining connections** — After the timeout, any remaining
+   connections are forcefully closed via TCP RST.
+5. **Cancel background tasks** — ACME renewal tasks, rate limiter eviction task,
+   and admin socket listener are all cancelled.
+6. **Exit with code 0**.
+
+The `shutdown_timeout_secs` is configurable in StaticConfig (default: 30
+seconds). See config.md for details.
 
 ## Deployment
 
@@ -442,6 +512,51 @@ SSH traffic for Git operations is not proxied through the reverse proxy. It
 continues to be routed directly to the Gitea container via Docker port
 publishing (e.g., `203.0.113.10:22:2222`), matching the current deployment
 pattern.
+
+## Startup Sequence
+
+The proxy starts components in a specific order to ensure fail-fast behavior
+and correct dependency initialization:
+
+1. **Parse and validate config** — Read the TOML config file, deserialize into
+   `StaticConfig` and `DynamicConfig`, and validate all rules. If validation
+   fails, exit with non-zero code and log errors. No ports are bound.
+
+2. **Initialize DynamicConfig** — Load sites, rate limits, and body limits into
+   `ArcSwap<DynamicConfig>`.
+
+3. **Initialize shared state** — Create the rate limiter
+   `HashMap<IpAddr, TokenBucket>`, the shared `hyper::Client`, and the
+   `tracing-subscriber` with file and stdout layers.
+
+4. **Bind health check port** (if enabled) — Bind `127.0.0.1:{health_check_port}`.
+   Fail-fast if bind fails.
+
+5. **Bind admin socket** (if enabled) — Remove any stale socket file first, then
+   bind the Unix domain socket. If the socket file exists and another process is
+   listening, log a warning and fail the admin socket (but continue starting —
+   the admin socket is non-critical).
+
+6. **Bind all listener ports** — For each listener: bind HTTP port (if enabled)
+   and HTTPS port. If any bind fails, fail-fast and exit. All ports are bound
+   before proceeding.
+
+7. **Load TLS configuration** — For each listener: load manual certificates or
+   initialize ACME state machine. If manual certificate loading fails, fail-fast
+   and exit. For ACME: if no cached certificate exists and ACME provisioning
+   fails, fail-fast and exit.
+
+8. **Start TCP listeners** — Begin accepting connections on all bound ports.
+
+9. **Start background tasks** — ACME renewal tasks (per listener in ACME mode),
+   rate limiter eviction task, signal handler task, admin socket handler task.
+
+10. **Signal readiness** — Send `sd_notify("READY=1")` to systemd (if running
+    under systemd).
+
+**Failure semantics**: **Fail-fast**. If any step fails, the process exits with
+a non-zero code. The proxy does not partially start. All ports are bound before
+any connections are accepted.
 
 ## Design Decisions
 

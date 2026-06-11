@@ -100,6 +100,11 @@ Immutable after startup. Changes require a process restart.
 | `format` | `"text"` or `"json"` | Log output format |
 | `log_file_path` | `String` | Path to log file. When set, structured logs are written to this file in addition to stdout/stderr. Strongly recommended for fail2ban integration in container deployments (see ADR-020). Default: not set (file logging disabled) |
 
+**Note**: The entire `LoggingConfig` (including `log_file_path`) is static and
+requires a process restart to change. Log file path changes require reopening
+file handles, which is complex and low-value for Phase 1. Log rotation (Phase 2)
+will be handled via signal-based or built-in rotation.
+
 **ListenerConfig** (per-listener static config):
 
 | Field | Type | Description |
@@ -141,16 +146,42 @@ connections immediately.
 | `upstream_connect_timeout_secs` | `u64` | TCP connect timeout in seconds (default: `5`; see ADR-015, ADR-017) |
 | `upstream_request_timeout_secs` | `u64` | Full request timeout in seconds (default: `60`; see ADR-015, ADR-017) |
 
-Sites are defined per listener in the `[[listeners]]` entries. Each listener
-routes its own sites independently. The `DynamicConfig` collects all sites
-across all listeners for hot-reload via `ArcSwap`. When a config reload
-occurs, all listener site mappings are updated atomically.
+Sites are defined per listener in the `[[listeners]]` entries for organizational
+purposes, but at runtime they are collected into a single global routing table
+in `DynamicConfig`. The proxy looks up the `Host` header in this global table to
+route requests. Hostnames must be unique across all listeners — a `Host` header
+can only match one site definition, regardless of which listener received the
+request. See ADR-019 for the rationale behind the `[[listeners]]` configuration
+format.
 
 **Why these are dynamic:** See ADR-008 for the rationale. Site definitions
 and rate limits are per-request concerns that should not require restarting
 the proxy or dropping active connections. Rate limits and body limits are
 global settings in Phase 1; per-site configuration for these is deferred to
 Phase 2.
+
+### Default Values
+
+| Field | Type | Default | Required |
+|-------|------|---------|----------|
+| `allow_wildcard_bind` | `bool` | `false` | No |
+| `health_check_port` | `u16` | `9900` | No |
+| `admin_socket_path` | `String` | `/run/reverse-proxy/admin.sock` | No |
+| `shutdown_timeout_secs` | `u64` | `30` | No |
+| `logging.level` | `String` | `"info"` | No |
+| `logging.format` | `String` | `"text"` | No |
+| `logging.log_file_path` | `String` | (not set) | No |
+| `listeners[].http_port` | `u16` | `80` | No |
+| `listeners[].https_port` | `u16` | `443` | No |
+| `listeners[].tls.acme_directory` | `String` | `"production"` | No |
+| `sites[].upstream_scheme` | `String` | `"http"` | No |
+| `sites[].upstream_connect_timeout_secs` | `u64` | `5` | No |
+| `sites[].upstream_request_timeout_secs` | `u64` | `60` | No |
+| `rate_limit.requests_per_second` | `u32` | — | Yes |
+| `rate_limit.burst` | `u32` | — | Yes |
+| `body.limit_bytes` | `u64` | — | Yes |
+
+Fields without defaults are required and must be specified in the config file.
 
 ## Config Reload
 
@@ -186,6 +217,41 @@ Both mechanisms converge on the same code path:
 2. Deserialize into `DynamicConfig`
 3. Validate (check upstream reachability is optional)
 4. Call `ConfigReloadHandle::reload(new_config)`
+
+### Static Config Changes During Reload
+
+When the config file is reloaded (via SIGHUP or admin socket), the entire file
+is read and validated — both static and dynamic portions. This provides early
+error detection for misconfigurations that would prevent a restart from
+succeeding.
+
+If the full config fails validation, the reload is rejected and the old
+DynamicConfig remains active.
+
+If the full config passes validation but static fields have changed, the
+DynamicConfig is swapped normally and a warning is logged listing the changed
+static fields and noting that a restart is required for those changes to take
+effect. This gives operators early feedback about config drift.
+
+Only the DynamicConfig portion is swapped via ArcSwap. StaticConfig changes
+require a process restart to take effect.
+
+### Reload Serialization
+
+Reload operations are serialized using a `tokio::sync::Mutex` on the reload
+code path. If a reload is in progress (triggered by SIGHUP or admin socket) and
+a second reload is requested, the second request waits for the first to
+complete, then re-reads the config file (getting the latest version) and
+proceeds. This prevents race conditions where two concurrent reloads could apply
+an older config over a newer one.
+
+### Out of Scope: File Watching
+
+Automatic file watching (inotify, fsnotify, etc.) is out of scope for Phase 1.
+Config reload is triggered explicitly by SIGHUP or admin socket command. File
+watching adds complexity (debouncing, handling atomic renames, handling editor
+swap files) that is not justified for a single-instance proxy with infrequent
+config changes.
 
 ## TOML Config Format
 
@@ -296,7 +362,7 @@ upstream = "127.0.0.1:8080"
 On startup, the config is validated:
 
 1. At least one `[[listeners]]` entry must exist
-2. Each listener's `bind_addr` is not `0.0.0.0` unless `allow_wildcard_bind = true` (in config) or `--allow-wildcard-bind` (CLI flag) is set (see ADR-016, ADR-020)
+2. Each listener's `bind_addr` is not `0.0.0.0` unless `allow_wildcard_bind` is enabled. This can be enabled via config (`allow_wildcard_bind = true`) or CLI flag (`--allow-wildcard-bind`). Either source enables it — it is an OR relationship, not AND. The CLI flag does not override the config value; if either is set, wildcard binding is allowed.
 3. Each listener's `bind_addr` and `https_port` combination must be unique
 4. In ACME mode, `acme_domains` must be non-empty
 5. In manual mode, `cert_path` and `key_path` must both be set and the files
@@ -308,6 +374,23 @@ On startup, the config is validated:
    route a request to when the `Host` header matches multiple sites.
 8. `rate_limit.requests_per_second` must be > 0
 9. `body.limit_bytes` must be > 0
+10. Each listener's `bind_addr` and `http_port` combination must be unique
+    (prevents bind-time errors, same as rule 3 for `https_port`)
+11. Within a listener, `http_port` and `https_port` must differ
+12. `https_port` must be 1–65535 (required — TLS needs a port)
+13. `http_port` must be 0 (disabled) or 1–65535
+14. `health_check_port` must not conflict with any listener's `http_port` or
+    `https_port` on the same bind address
+15. Site `host` values must not include a port number (e.g., `git.alk.dev`,
+    not `git.alk.dev:443`)
+16. Site `host` values must be valid hostnames (not IP addresses, not
+    including ports). Hostnames are normalized to lowercase during validation.
+17. `upstream` must be in `host:port` format where `port` is a required integer
+    1–65535. Examples: `gitea:3000`, `127.0.0.1:3000`, `[::1]:3000`. Invalid
+    examples: `gitea` (missing port), `http://gitea:3000` (includes scheme),
+    `10.0.0.5` (missing port). The `upstream_scheme` field handles the protocol.
+18. `upstream_scheme` values are case-sensitive: only `"http"` or `"https"`
+    (lowercase). Default is `"http"`.
 
 On SIGHUP reload, the same validation applies. If the new config fails
 validation, the reload is rejected and the old config remains active. An error

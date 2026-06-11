@@ -86,31 +86,35 @@ details.
  config.toml ───────► │  StaticConfig + DynamicConfig       │
  (volume mount)       │  (ArcSwap for hot-reload)            │
                       │                                      │
-                      │  ┌─ Listener 1 ─────────────────┐   │
- bind_addr:80  ────►  │  │  HTTP → 301 redirect           │   │
- (published)          │  └────────────────────────────────┘   │
-                      │                                      │
- bind_addr:443 ────►  │  │  TLS listener (tokio-rustls)    │   │
- (published)          │  │  ├─ ACME or Manual TLS config    │   │
-                      │  │  └─ axum router                  │   │
-                      │  │     ├─ Host-based routing         │   │
-                      │  │     ├─ git.alk.dev → gitea:3000  │   │
-                      │  │     └─ Rate limiting, headers     │   │
-                      │  └────────────────────────────────┘   │
-                      │                                      │
-                      │  ┌─ Listener N ─────────────────┐   │
- bind_addr_N:80  ───► │  │  HTTP → 301 redirect           │   │
-                      │  └────────────────────────────────┘   │
-                      │                                      │
- bind_addr_N:443 ───► │  │  TLS listener (tokio-rustls)    │   │
-                      │  │  ├─ Manual TLS cert             │   │
-                      │  │  └─ axum router                  │   │
-                      │  │     ├─ alk.dev → app:8080       │   │
-                      │  │     └─ Rate limiting, headers     │   │
-                      │  └────────────────────────────────┘   │
-                      │                                      │
-                      │  /health → 200 OK (port 9900)        │
-                      └────────────────────────────────────┘
+                       │  ┌─ Listener 1 ─────────────────┐   │
+  bind_addr:80  ────►  │  │  HTTP → 301 redirect           │   │
+  (published)          │  └────────────────────────────────┘   │
+                       │                                      │
+  bind_addr:443 ────►  │  │  TLS listener (tokio-rustls)    │   │
+  (published)          │  │  ├─ ACME or Manual TLS config    │   │
+                       │  │  └─ axum router (per-listener)   │   │
+                       │  │     ├─ /health → 200 OK (any)    │   │
+                       │  │     ├─ Host → global site lookup  │   │
+                       │  │     ├─ git.alk.dev → gitea:3000  │   │
+                       │  │     └─ Rate limiting, headers     │   │
+                       │  └────────────────────────────────┘   │
+                       │                                      │
+                       │  ┌─ Listener N ─────────────────┐   │
+  bind_addr_N:80  ───► │  │  HTTP → 301 redirect           │   │
+                       │  └────────────────────────────────┘   │
+                       │                                      │
+  bind_addr_N:443 ───► │  │  TLS listener (tokio-rustls)    │   │
+                       │  │  ├─ Manual TLS cert             │   │
+                       │  │  └─ axum router (per-listener)   │   │
+                       │  │     ├─ /health → 200 OK (any)    │   │
+                       │  │     ├─ Host → global site lookup  │   │
+                       │  │     ├─ alk.dev → app:8080       │   │
+                       │  │     └─ Rate limiting, headers     │   │
+                       │  └────────────────────────────────┘   │
+                       │                                      │
+                       │  /health → 200 OK (port 9900)        │
+                       │  Admin socket (Unix domain)           │
+                       └────────────────────────────────────┘
                             │              │
                      ┌──────┘              └──────┐
                      │                             │
@@ -120,6 +124,13 @@ details.
               ├─ app:8080                ├─ log dir (rw, fail2ban)
                                          └─ admin socket (rw)
 ```
+
+Each listener has its own `axum::Router` instance with its own middleware stack,
+but all routers share `Arc<ArcSwap<DynamicConfig>>` and
+`Arc<Mutex<HashMap<IpAddr, TokenBucket>>>` via axum State. Site routing is
+global: the `Host` header is matched against a single routing table collected
+from all listeners' site definitions. Hostnames must be unique across all
+listeners — see C1 resolution in the architecture review.
 
 In container deployments (ADR-020), the proxy runs in a minimal container with
 `0.0.0.0` bind address and Docker port publishing. Upstream addresses use Docker
@@ -196,6 +207,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [018](decisions/018-body-size-limit.md) | Request body size limit | 100 MB default matching nginx, Gitea push compatibility |
 | [019](decisions/019-multi-config-listeners.md) | Multi-config listeners | `[[listeners]]` supporting both dedicated-IP and shared-IP deployment models |
 | [020](decisions/020-container-deployment.md) | Container deployment model | Defense-in-depth via container isolation; file-primary logging; flexible upstream addressing |
+| [021](decisions/021-x-forwarded-for-edge-proxy.md) | X-Forwarded-For edge proxy model | Replace, don't append — proxy is the edge, no trusted upstream proxies |
 
 ## Open Questions
 

@@ -76,26 +76,43 @@ Incoming HTTPS request
 ### 1. Host-Based Routing
 
 The axum router uses a `Host` extractor to match incoming requests to site
-definitions from `DynamicConfig`. Each site definition maps a hostname to an
-upstream address.
+definitions from `DynamicConfig`. Sites are defined per-listener in the TOML
+configuration for organizational purposes, but at runtime they are collected
+into a single global routing table. The proxy looks up the `Host` header in
+this global table and either proxies to the upstream or returns 404.
 
-Where `host_based_proxy` reads the `Host` header, looks up the site in
-`DynamicConfig.sites`, and either proxies to the upstream or returns 404.
+Host matching is **case-insensitive** per RFC 7230 §2.7.3. The `Host` header
+is normalized to lowercase before matching. Site `host` values in
+configuration are normalized to lowercase during validation.
+
+The `Host` header port component (e.g., `git.alk.dev:443`) is stripped before
+matching. Site `host` values must not include ports.
+
+The proxy does not filter or restrict paths. All paths and query strings on a
+known host are forwarded to the upstream without modification.
+
+The `/health` path is a special case: it matches regardless of the `Host`
+header and is evaluated before host-based routing. A `GET /health` request on
+any hostname returns `200 OK` with an empty body.
 
 ### 2. Proxy Header Injection
 
-Headers are injected before forwarding. The handler reads connection metadata
-from axum's `ConnectInfo` and the original request:
+Headers are injected before forwarding. The proxy is an **edge proxy** — it
+sits directly in front of the internet with no trusted proxies upstream. This
+means the client IP from `ConnectInfo<SocketAddr>` is the real client IP, and
+existing `X-Forwarded-For` headers from the client cannot be trusted.
 
 | Header | Value Source | Notes |
 |--------|-------------|-------|
-| `Host` | Original request `Host` header | Already present; preserved as-is |
+| `Host` | Original request `Host` header | Preserved as-is |
 | `X-Real-IP` | `ConnectInfo<SocketAddr>` remote IP | Set to client's IP address |
-| `X-Forwarded-For` | Client IP, appended if header exists | Comma-separated list of proxies |
+| `X-Forwarded-For` | `ConnectInfo<SocketAddr>` remote IP | **Replaced**, not appended. The proxy is the edge proxy — there are no trusted proxies upstream, so existing `X-Forwarded-For` values from the client cannot be trusted. |
 | `X-Forwarded-Proto` | Determined by which listener port received the request | `https` for requests on the listener's `https_port`, `http` for requests on the listener's `http_port` |
 
-The `X-Forwarded-For` handling must append the client IP to any existing value
-(rather than replacing it), to support chained proxies correctly.
+**ConnectInfo propagation**: `ConnectInfo<SocketAddr>` is populated by
+extracting `TcpStream::peer_addr()` before wrapping the connection in
+`TlsStream`. Each listener provides this information to its axum Router via
+`axum::ServiceExt::into_make_service_with_connect_info::<SocketAddr>()`.
 
 ### 3. Request Forwarding
 
@@ -106,7 +123,12 @@ The proxy handler constructs a new request to the upstream:
 2. Copy the request method, headers, and body from the original
 3. Inject proxy headers (X-Real-IP, X-Forwarded-For, X-Forwarded-Proto)
 4. Send the request via a shared hyper Client instance
-5. Stream the response back to the client
+5. Stream the response back to the client (chunk-by-chunk, not buffered)
+
+   If the client disconnects while the upstream is still sending, the upstream
+   connection is closed and the event is logged at `debug` level. If the
+   upstream disconnects mid-stream, the client receives whatever data was
+   already sent and the connection is closed.
 
 The hyper Client is created once at startup and shared via axum's `State`. It
 must be configured with (see ADR-017 for rationale):
@@ -118,22 +140,77 @@ Per-site timeout overrides are available via `upstream_connect_timeout_secs`
 and `upstream_request_timeout_secs` in `SiteConfig` (see ADR-015). When not
 specified, defaults of 5s connect and 60s request are used.
 
-### 4. Error Handling
+### 4. Header Handling
 
-| Upstream Condition | Response | Notes |
-|-------------------|----------|-------|
-| Upstream reachable | Stream response as-is | Headers, status, body all forwarded |
-| Upstream unreachable | 502 Bad Gateway | Logged at `warn` level |
-| Upstream timeout | 504 Gateway Timeout | Logged at `warn` level |
-| Request body too large | 413 Payload Too Large | From `DefaultBodyLimit` middleware |
-| Rate limit exceeded | 429 Too Many Requests | Logged at `info` level |
-| Unknown Host header | 404 Not Found | No matching site definition |
+The proxy must handle request and response headers correctly to avoid security
+issues and protocol violations.
 
-### 5. HTTP → HTTPS Redirect
+**Headers removed before forwarding (hop-by-hop headers per RFC 2616 §13.5.1):**
+
+- `Connection`
+- `Keep-Alive`
+- `Proxy-Authorization`
+- `Proxy-Authenticate`
+- `TE`
+- `Trailers`
+- `Transfer-Encoding`
+- `Upgrade`
+
+These headers are connection-specific and must not be forwarded to the
+upstream. Removing `Proxy-Authorization` and `Proxy-Authenticate` prevents
+credential leakage.
+
+**Headers added or modified:**
+
+See the Proxy Header Injection section above for the full list of proxy headers
+(X-Real-IP, X-Forwarded-For, X-Forwarded-Proto, Host).
+
+**Headers NOT added in Phase 1:**
+
+- `Via`: Not added. The proxy is an edge proxy and `Via` is primarily for
+  tracking proxy chains. Can be added in Phase 2 if needed.
+
+**Response headers:**
+
+Upstream response headers are forwarded as-is to the client, with the following
+exceptions:
+- Hop-by-hop headers listed above are removed
+- The proxy does not add a `Server` header to responses
+
+### 5. Error Handling
+
+All error responses use plain text bodies with no proxy version or identity
+information. No upstream error details are included. Response format:
+
+- Content-Type: `text/plain; charset=utf-8`
+- Body: Brief status text matching the HTTP status (e.g., `Bad Gateway` for 502)
+
+| Upstream Condition | Response | Body | Notes |
+|-------------------|----------|------|-------|
+| Upstream reachable | Stream response as-is | (upstream body) | Headers, status, body all forwarded |
+| Upstream unreachable | 502 Bad Gateway | `Bad Gateway` | Logged at `warn` level |
+| Upstream timeout | 504 Gateway Timeout | `Gateway Timeout` | Logged at `warn` level |
+| Request body too large | 413 Payload Too Large | `Payload Too Large` | From `DefaultBodyLimit` middleware |
+| Rate limit exceeded | 429 Too Many Requests | `Too Many Requests` | Logged at `info` level |
+| Unknown Host header | 404 Not Found | `Not Found` | No matching site definition |
+| Missing Host header | 400 Bad Request | `Bad Request` | Required for routing |
+
+### 6. HTTP → HTTPS Redirect
 
 A separate HTTP listener on port 80 (per listener) handles redirect. It reads
 the `Host` header from the incoming request and returns a 301 Permanent Redirect
-to the HTTPS equivalent URL (preserving the path and query string).
+to the HTTPS equivalent URL.
+
+The redirect URL is constructed as:
+`https://{host}:{https_port}/{path}?{query}`
+
+Where:
+- `{host}` is the hostname portion of the `Host` header (port stripped)
+- `{https_port}` is the listener's `https_port`, omitted if it's 443
+- `{path}` and `{query}` are preserved from the original request
+
+If the incoming request has no `Host` header, the proxy returns `400 Bad
+Request`.
 
 Each listener has its own HTTP redirect on its own bind address.
 
@@ -147,6 +224,11 @@ for upstreams that require TLS (e.g., separate hosts or secure internal services
 For the initial deployment, upstream connections use plain HTTP (e.g.,
 `git.alk.dev` → `127.0.0.1:3000`, `alk.dev` → `127.0.0.1:8080`) since TLS
 between the proxy and backend services on loopback is unnecessary.
+
+When `upstream_scheme` is `"https"`, the proxy validates the upstream's TLS
+certificate using the system's native TLS root certificates (via `rustls` root
+cert store). Certificate validation failures result in a 502 Bad Gateway
+response. No certificate pinning or custom CA support is provided in Phase 1.
 
 ## Body Size Limit
 
@@ -168,6 +250,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [015](decisions/015-per-site-timeouts.md) | Per-site upstream timeouts with defaults | 5s connect / 60s request defaults, per-site overrides |
 | [017](decisions/017-upstream-connection-defaults.md) | Upstream connection defaults | HTTP/1.1, no redirects, connection pooling |
 | [018](decisions/018-body-size-limit.md) | Request body size limit | 100 MB default matching nginx, Gitea push compatibility |
+| [021](decisions/021-x-forwarded-for-edge-proxy.md) | X-Forwarded-For edge proxy model | Replace, don't append — proxy is the edge, no trusted upstream proxies |
 
 ## Open Questions
 
