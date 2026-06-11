@@ -1,5 +1,6 @@
 mod helpers;
 
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -247,4 +248,145 @@ async fn test_rate_limit_eviction_task() {
     assert!(!limiter.contains_ip(std::net::IpAddr::from([192, 168, 1, 1])));
 
     handle.abort();
+}
+
+fn write_valid_config(dir: &std::path::Path) -> std::path::PathBuf {
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    std::fs::write(&cert_path, "cert").unwrap();
+    std::fs::write(&key_path, "key").unwrap();
+
+    let toml = format!(
+        r#"
+[rate_limit]
+requests_per_second = 10
+burst = 20
+
+[body]
+limit_bytes = 104857600
+
+[[listeners]]
+bind_addr = "127.0.0.1"
+http_port = 80
+https_port = 443
+
+[listeners.tls]
+mode = "manual"
+cert_path = "{}"
+key_path = "{}"
+
+[[listeners.sites]]
+host = "test.local"
+upstream = "127.0.0.1:8080"
+"#,
+        cert_path.to_str().unwrap(),
+        key_path.to_str().unwrap()
+    );
+    let config_path = dir.join("valid_config.toml");
+    std::fs::write(&config_path, toml).unwrap();
+    config_path
+}
+
+fn write_invalid_config(dir: &std::path::Path) -> std::path::PathBuf {
+    let toml = r#"
+[rate_limit]
+requests_per_second = 0
+burst = 20
+
+[body]
+limit_bytes = 0
+"#;
+    let config_path = dir.join("invalid_config.toml");
+    std::fs::write(&config_path, toml).unwrap();
+    config_path
+}
+
+fn binary_path() -> std::path::PathBuf {
+    let bin = env!("CARGO_BIN_EXE_reverse-proxy");
+    std::path::PathBuf::from(bin)
+}
+
+#[test]
+fn test_validate_valid_config_exits_0() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = write_valid_config(dir.path());
+    let output = Command::new(binary_path())
+        .arg("--config")
+        .arg(config_path.to_str().unwrap())
+        .arg("--validate")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "expected exit 0, got {}: stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("valid"));
+}
+
+#[test]
+fn test_validate_invalid_config_exits_1() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = write_invalid_config(dir.path());
+    let output = Command::new(binary_path())
+        .arg("--config")
+        .arg(config_path.to_str().unwrap())
+        .arg("--validate")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "expected exit 1, got success");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("validation failed") || stderr.contains("error"));
+}
+
+#[test]
+fn test_validate_missing_config_file_exits_1() {
+    let output = Command::new(binary_path())
+        .arg("--config")
+        .arg("/nonexistent/path/config.toml")
+        .arg("--validate")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "expected exit 1, got success");
+}
+
+#[test]
+fn test_validate_wildcard_bind_via_cli_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let toml = r#"
+[rate_limit]
+requests_per_second = 10
+burst = 20
+
+[body]
+limit_bytes = 104857600
+
+[[listeners]]
+bind_addr = "0.0.0.0"
+http_port = 80
+https_port = 443
+
+[listeners.tls]
+mode = "acme"
+acme_domains = ["test.local"]
+acme_cache_dir = "/tmp/acme"
+"#;
+    let config_path = dir.path().join("wildcard.toml");
+    std::fs::write(&config_path, toml).unwrap();
+
+    let output = Command::new(binary_path())
+        .arg("--config")
+        .arg(config_path.to_str().unwrap())
+        .arg("--validate")
+        .arg("--allow-wildcard-bind")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "expected exit 0 with --allow-wildcard-bind, got {}: stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

@@ -16,18 +16,15 @@ pub struct StaticConfig {
     pub logging: LoggingConfig,
 }
 
-#[allow(dead_code)]
-fn default_health_check_port() -> u16 {
+pub fn default_health_check_port() -> u16 {
     9900
 }
 
-#[allow(dead_code)]
-fn default_admin_socket_path() -> String {
+pub fn default_admin_socket_path() -> String {
     "/run/reverse-proxy/admin.sock".to_string()
 }
 
-#[allow(dead_code)]
-fn default_shutdown_timeout_secs() -> u64 {
+pub fn default_shutdown_timeout_secs() -> u64 {
     30
 }
 
