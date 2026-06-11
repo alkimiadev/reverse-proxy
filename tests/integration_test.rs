@@ -30,3 +30,42 @@ fn test_config_fixtures() {
     let dynamic_config = reverse_proxy::config::test_fixtures::test_dynamic_config();
     assert!(!dynamic_config.sites.is_empty());
 }
+
+#[tokio::test]
+async fn test_health_check_local_port_returns_200() {
+    let (addr, handle) =
+        reverse_proxy::health::start_health_check_listener(0).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/health", addr.port()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert!(body.is_empty());
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_health_check_local_port_binds_localhost() {
+    let (addr, handle) =
+        reverse_proxy::health::start_health_check_listener(0).await.unwrap();
+
+    assert!(addr.ip().is_loopback());
+    assert_eq!(addr.ip().to_string(), "127.0.0.1");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_health_check_disabled_when_port_zero() {
+    let result = reverse_proxy::health::start_health_check_listener(0).await;
+    assert!(result.is_ok());
+    let (addr, handle) = result.unwrap();
+    assert_ne!(addr.port(), 0);
+    handle.abort();
+}
