@@ -19,6 +19,16 @@ pub enum ProxyError {
     NotFound,
     #[error("Bad Request")]
     BadRequest,
+    #[error("upstream connection failed")]
+    UpstreamConnection(#[source] hyper_util::client::legacy::Error),
+    #[error("upstream timeout")]
+    UpstreamTimeout,
+    #[error("upstream tls certificate validation failed")]
+    UpstreamTls(#[source] std::io::Error),
+    #[error("no matching site for host")]
+    UnknownHost,
+    #[error("missing host header")]
+    MissingHost,
 }
 
 impl ProxyError {
@@ -28,8 +38,11 @@ impl ProxyError {
             Self::GatewayTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
-            Self::NotFound => StatusCode::NOT_FOUND,
-            Self::BadRequest => StatusCode::BAD_REQUEST,
+            Self::NotFound | Self::UnknownHost => StatusCode::NOT_FOUND,
+            Self::BadRequest | Self::MissingHost => StatusCode::BAD_REQUEST,
+            Self::UpstreamConnection(_) => StatusCode::BAD_GATEWAY,
+            Self::UpstreamTimeout => StatusCode::GATEWAY_TIMEOUT,
+            Self::UpstreamTls(_) => StatusCode::BAD_GATEWAY,
         }
     }
 
@@ -39,8 +52,11 @@ impl ProxyError {
             Self::GatewayTimeout { .. } => "Gateway Timeout",
             Self::PayloadTooLarge => "Payload Too Large",
             Self::TooManyRequests { .. } => "Too Many Requests",
-            Self::NotFound => "Not Found",
-            Self::BadRequest => "Bad Request",
+            Self::NotFound | Self::UnknownHost => "Not Found",
+            Self::BadRequest | Self::MissingHost => "Bad Request",
+            Self::UpstreamConnection(_) => "Bad Gateway",
+            Self::UpstreamTimeout => "Gateway Timeout",
+            Self::UpstreamTls(_) => "Bad Gateway",
         }
     }
 }
@@ -75,6 +91,15 @@ impl IntoResponse for ProxyError {
                     host,
                     path
                 );
+            }
+            Self::UpstreamConnection(e) => {
+                tracing::warn!(error = %e, status = 502, "upstream connection failed");
+            }
+            Self::UpstreamTimeout => {
+                tracing::warn!(status = 504, "upstream timeout");
+            }
+            Self::UpstreamTls(e) => {
+                tracing::warn!(error = %e, status = 502, "upstream TLS error");
             }
             _ => {}
         }
