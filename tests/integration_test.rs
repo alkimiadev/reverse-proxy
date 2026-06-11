@@ -742,3 +742,147 @@ async fn test_body_limit_empty_body_request_succeeds() {
 
     let _ = server.shutdown_tx.send(());
 }
+
+#[tokio::test]
+async fn test_graceful_shutdown_trigger() {
+    let shutdown = Arc::new(reverse_proxy::shutdown::GracefulShutdown::new(30));
+
+    assert!(!shutdown.is_shutdown_requested());
+
+    let mut rx = shutdown.subscribe();
+    assert!(!*rx.borrow_and_update());
+
+    shutdown.trigger_shutdown();
+
+    assert!(shutdown.is_shutdown_requested());
+    assert!(rx.has_changed().unwrap());
+    assert!(*rx.borrow_and_update());
+}
+
+#[tokio::test]
+async fn test_graceful_shutdown_custom_timeout() {
+    let shutdown = reverse_proxy::shutdown::GracefulShutdown::new(60);
+    assert_eq!(shutdown.shutdown_timeout(), Duration::from_secs(60));
+}
+
+#[tokio::test]
+async fn test_graceful_shutdown_subscribe_multiple_receivers() {
+    let shutdown = Arc::new(reverse_proxy::shutdown::GracefulShutdown::new(10));
+
+    let mut rx1 = shutdown.subscribe();
+    let mut rx2 = shutdown.subscribe();
+
+    assert!(!*rx1.borrow_and_update());
+    assert!(!*rx2.borrow_and_update());
+
+    shutdown.trigger_shutdown();
+
+    assert!(rx1.has_changed().unwrap());
+    assert!(rx2.has_changed().unwrap());
+}
+
+#[tokio::test]
+async fn test_sighup_config_reload_valid_config() {
+    let config_arc = Arc::new(ArcSwap::from_pointee(
+        reverse_proxy::config::test_fixtures::test_dynamic_config(),
+    ));
+    let static_config = reverse_proxy::config::test_fixtures::test_static_config();
+    let reload_handle = Arc::new(reverse_proxy::config::ConfigReloadHandle::new(
+        config_arc.clone(),
+        static_config,
+    ));
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_content = r#"
+health_check_port = 9900
+admin_socket_path = "/tmp/test-admin.sock"
+
+[logging]
+level = "info"
+format = "text"
+
+[rate_limit]
+requests_per_second = 20
+burst = 40
+
+[body]
+limit_bytes = 104857600
+
+[[listeners]]
+bind_addr = "127.0.0.1"
+http_port = 80
+https_port = 443
+
+[listeners.tls]
+mode = "acme"
+acme_domains = ["test.local"]
+acme_cache_dir = "/tmp/acme-cache"
+acme_directory = "staging"
+
+[[listeners.sites]]
+host = "test.local"
+upstream = "127.0.0.1:8080"
+"#;
+    let config_path = dir.path().join("config.toml");
+    tokio::fs::write(&config_path, config_content)
+        .await
+        .unwrap();
+
+    let config_path_str = config_path.to_str().unwrap().to_string();
+    reverse_proxy::shutdown::handle_sighup_reload(&reload_handle, &config_path_str).await;
+
+    let loaded = reload_handle.load();
+    assert_eq!(loaded.rate_limit.requests_per_second, 20);
+    assert_eq!(loaded.rate_limit.burst, 40);
+}
+
+#[tokio::test]
+async fn test_sighup_config_reload_invalid_config_keeps_old() {
+    let config_arc = Arc::new(ArcSwap::from_pointee(
+        reverse_proxy::config::test_fixtures::test_dynamic_config(),
+    ));
+    let static_config = reverse_proxy::config::test_fixtures::test_static_config();
+    let reload_handle = Arc::new(reverse_proxy::config::ConfigReloadHandle::new(
+        config_arc.clone(),
+        static_config,
+    ));
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_content = "invalid toml {{{";
+    let config_path = dir.path().join("config.toml");
+    tokio::fs::write(&config_path, config_content)
+        .await
+        .unwrap();
+
+    let config_path_str = config_path.to_str().unwrap().to_string();
+    let _ = reverse_proxy::shutdown::handle_sighup_reload(&reload_handle, &config_path_str).await;
+
+    let loaded = reload_handle.load();
+    assert_eq!(loaded.rate_limit.requests_per_second, 10);
+}
+
+#[tokio::test]
+async fn test_graceful_shutdown_with_health_check() {
+    let (addr, handle) = reverse_proxy::health::start_health_check_listener(0)
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/health", addr.port()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let shutdown = Arc::new(reverse_proxy::shutdown::GracefulShutdown::new(5));
+    let rx = shutdown.subscribe();
+
+    assert!(!shutdown.is_shutdown_requested());
+
+    shutdown.trigger_shutdown();
+    assert!(shutdown.is_shutdown_requested());
+    assert!(rx.has_changed().unwrap());
+
+    handle.abort();
+}
