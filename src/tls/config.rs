@@ -207,13 +207,27 @@ mod tests {
             .map(|cs| format!("{cs:?}"))
             .collect();
 
-        assert!(cipher_suites.iter().any(|cs| cs.contains("AES_256_GCM_SHA384")));
-        assert!(cipher_suites.iter().any(|cs| cs.contains("AES_128_GCM_SHA256")));
-        assert!(cipher_suites.iter().any(|cs| cs.contains("CHACHA20_POLY1305_SHA256")));
-        assert!(cipher_suites.iter().any(|cs| cs.contains("ECDHE_ECDSA_WITH_AES_256_GCM_SHA384")));
-        assert!(cipher_suites.iter().any(|cs| cs.contains("ECDHE_ECDSA_WITH_AES_128_GCM_SHA256")));
-        assert!(cipher_suites.iter().any(|cs| cs.contains("ECDHE_RSA_WITH_AES_256_GCM_SHA384")));
-        assert!(cipher_suites.iter().any(|cs| cs.contains("ECDHE_RSA_WITH_AES_128_GCM_SHA256")));
+        assert!(cipher_suites
+            .iter()
+            .any(|cs| cs.contains("AES_256_GCM_SHA384")));
+        assert!(cipher_suites
+            .iter()
+            .any(|cs| cs.contains("AES_128_GCM_SHA256")));
+        assert!(cipher_suites
+            .iter()
+            .any(|cs| cs.contains("CHACHA20_POLY1305_SHA256")));
+        assert!(cipher_suites
+            .iter()
+            .any(|cs| cs.contains("ECDHE_ECDSA_WITH_AES_256_GCM_SHA384")));
+        assert!(cipher_suites
+            .iter()
+            .any(|cs| cs.contains("ECDHE_ECDSA_WITH_AES_128_GCM_SHA256")));
+        assert!(cipher_suites
+            .iter()
+            .any(|cs| cs.contains("ECDHE_RSA_WITH_AES_256_GCM_SHA384")));
+        assert!(cipher_suites
+            .iter()
+            .any(|cs| cs.contains("ECDHE_RSA_WITH_AES_128_GCM_SHA256")));
     }
 
     #[test]
