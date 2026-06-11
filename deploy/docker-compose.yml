@@ -1,0 +1,52 @@
+services:
+  reverse-proxy:
+    build: .
+    container_name: reverse-proxy
+    restart: unless-stopped
+    ports:
+      - "203.0.113.10:80:80"
+      - "203.0.113.10:443:443"
+    volumes:
+      - /etc/reverse-proxy/config.toml:/etc/reverse-proxy/config.toml:ro
+      - /var/lib/reverse-proxy/acme-cache:/var/lib/reverse-proxy/acme-cache
+      - /var/log/reverse-proxy:/var/log/reverse-proxy
+      - /run/reverse-proxy:/run/reverse-proxy
+    networks:
+      - proxy-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9900/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  gitea:
+    image: gitea/gitea:latest
+    container_name: gitea
+    restart: unless-stopped
+    ports:
+      - "203.0.113.10:22:2222"
+    volumes:
+      - /opt/gitea:/data
+    networks:
+      - proxy-net
+      - gitea-db-net
+
+  gitea-db:
+    image: postgres:16-alpine
+    container_name: gitea-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: gitea
+    volumes:
+      - gitea-db:/var/lib/postgresql/data
+    networks:
+      - gitea-db-net
+
+networks:
+  proxy-net:
+  gitea-db-net:
+
+volumes:
+  gitea-db:
