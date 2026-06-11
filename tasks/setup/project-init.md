@@ -1,7 +1,7 @@
 ---
 id: setup/project-init
 name: Initialize Rust project with Cargo, dependencies, and module skeleton
-status: pending
+status: complete
 depends_on: []
 scope: moderate
 risk: low
