@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
+[lib]
+name = "reverse_proxy"
+path = "src/lib.rs"
+
 [[bin]]
 name = "reverse-proxy"
 path = "src/main.rs"
@@ -27,3 +31,7 @@ clap = { version = "=4.6.1", features = ["derive"] }
 signal-hook = "=0.3.18"
 anyhow = "=1.0.102"
 thiserror = "=2.0.18"
+
+[dev-dependencies]
+rcgen = "=0.13"
+reqwest = { version = "=0.12", features = ["json"] }
