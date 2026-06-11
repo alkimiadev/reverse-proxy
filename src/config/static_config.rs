@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct StaticConfig {
     pub listeners: Vec<ListenerConfig>,
     #[serde(default)]
@@ -32,7 +32,7 @@ fn default_shutdown_timeout_secs() -> u64 {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ListenerConfig {
     pub bind_addr: String,
     #[serde(default = "default_http_port")]
@@ -55,7 +55,7 @@ fn default_https_port() -> u16 {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct TlsConfig {
     pub mode: String,
     #[serde(default)]
@@ -76,7 +76,7 @@ fn default_acme_directory() -> String {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
