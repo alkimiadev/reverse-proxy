@@ -5,5 +5,6 @@ pub mod health;
 pub mod logging;
 pub mod proxy;
 pub mod rate_limit;
+pub mod server;
 pub mod shutdown;
 pub mod tls;

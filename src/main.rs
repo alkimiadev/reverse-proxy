@@ -10,13 +10,21 @@ fn main() {
         }
     }
 
-    match cli::load_config(&args) {
-        Ok(_config) => {
-            tracing::info!("reverse-proxy starting");
-        }
-        Err(e) => {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    rt.block_on(async {
+        let loaded = match cli::load_config(&args) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                std::process::exit(1);
+            }
+        };
+
+        if let Err(e) =
+            reverse_proxy::server::run(loaded.static_config, loaded.dynamic_config).await
+        {
             eprintln!("error: {e:#}");
             std::process::exit(1);
         }
-    }
+    });
 }
