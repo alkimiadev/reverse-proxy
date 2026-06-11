@@ -38,7 +38,9 @@ config.toml
 │  bind_addr           │     │  sites[]              │
 │  http_port           │     │  rate_limit           │
 │  https_port          │     │  body_limit           │
-│  tls.mode            │     │  proxy_headers        │
+│  health_check_port   │     │  proxy_headers        │
+│  admin_socket_path   │     │                       │
+│  tls.mode            │     │  ← ArcSwap →          │
 │  tls.acme_domains    │     │                       │
 │  tls.cert_path       │     │  ← ArcSwap →          │
 │  tls.key_path        │     │  ConfigReloadHandle    │
@@ -59,9 +61,11 @@ Immutable after startup. Changes require a process restart.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `bind_addr` | `String` | IP address to bind to (must be explicit, no `0.0.0.0`) |
+| `bind_addr` | `String` | IP address to bind to (must be explicit, no `0.0.0.0`; see ADR-016) |
 | `http_port` | `u16` | Port for HTTP→HTTPS redirect (default: `80`; set to `0` to disable) |
 | `https_port` | `u16` | Port for TLS listener (default: `443`) |
+| `health_check_port` | `u16` | Port for local health check endpoint (default: `9900`; set to `0` to disable; see ADR-013) |
+| `admin_socket_path` | `String` | Unix domain socket path for admin API (default: `/run/reverse-proxy/admin.sock`; empty string to disable; see ADR-014) |
 | `tls.mode` | `"acme"` or `"manual"` | Certificate provisioning mode |
 | `tls.acme_domains` | `Vec<String>` | Domains for ACME SAN certificate (ACME mode only) |
 | `tls.acme_cache_dir` | `String` | ACME state cache directory |
@@ -95,6 +99,8 @@ connections immediately.
 | `host` | `String` | Hostname to match (e.g., `"git.alk.dev"`) |
 | `upstream` | `String` | Upstream address (e.g., `"127.0.0.1:3000"`) |
 | `upstream_scheme` | `"http"` or `"https"` | Protocol for upstream connection (default: `"http"`) |
+| `upstream_connect_timeout_secs` | `u64` | TCP connect timeout in seconds (default: `5`; see ADR-015, ADR-017) |
+| `upstream_request_timeout_secs` | `u64` | Full request timeout in seconds (default: `60`; see ADR-015, ADR-017) | |
 
 **Why these are dynamic:** See ADR-008 for the rationale. Site definitions
 and rate limits are per-request concerns that should not require restarting
@@ -120,16 +126,22 @@ behind this split.
 
 ### Reload Trigger
 
-The initial implementation uses SIGHUP as the reload trigger. When the process
-receives SIGHUP:
+Config reload is triggered by two mechanisms:
 
+1. **SIGHUP**: Re-reads the config file, validates, and swaps DynamicConfig if
+   valid. Simple and well-understood, but provides no feedback on success or
+   failure.
+
+2. **Admin socket**: The `reload` command via the admin Unix domain socket
+   performs the same action as SIGHUP but returns a structured response
+   indicating success or failure with an error message. See ADR-014 for
+   details.
+
+Both mechanisms converge on the same code path:
 1. Re-read the config file from disk
 2. Deserialize into `DynamicConfig`
 3. Validate (check upstream reachability is optional)
 4. Call `ConfigReloadHandle::reload(new_config)`
-
-Future implementations could add a Unix domain socket API or HTTP endpoint for
-config reload, but SIGHUP is sufficient for Phase 1.
 
 ## TOML Config Format
 
@@ -140,6 +152,8 @@ config reload, but SIGHUP is sufficient for Phase 1.
 bind_addr = "203.0.113.10"  # Replace with actual bind address
 http_port = 80
 https_port = 443
+health_check_port = 9900     # Local health check (0 to disable)
+admin_socket_path = "/run/reverse-proxy/admin.sock"  # Empty string to disable
 
 [server.tls]
 mode = "acme"                    # "acme" or "manual"
@@ -167,6 +181,8 @@ limit_bytes = 104857600          # 100 MB
 host = "git.alk.dev"
 upstream = "127.0.0.1:3000"
 upstream_scheme = "http"
+# upstream_connect_timeout_secs = 5    # Default: 5s
+# upstream_request_timeout_secs = 60   # Default: 60s
 
 [[sites]]
 host = "alk.dev"
@@ -205,13 +221,17 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [008](decisions/008-static-dynamic-config-split.md) | Static/dynamic config split | Immutable StaticConfig, hot-reloadable DynamicConfig via ArcSwap |
 | [010](decisions/010-multi-site-phase1.md) | Multi-site in Phase 1 | Multiple domains from initial release |
 | [011](decisions/011-multi-domain-tls.md) | Multi-domain TLS config | Single SAN certificate covering all domains |
+| [013](decisions/013-health-check-port.md) | Health check on separate local port | Localhost-only HTTP health check, configurable port |
+| [014](decisions/014-unix-socket-reload.md) | Unix domain socket config reload API | Programmatic reload with success/failure feedback |
+| [015](decisions/015-per-site-timeouts.md) | Per-site upstream timeouts with defaults | 5s connect / 60s request defaults, per-site overrides |
+| [016](decisions/016-explicit-bind-address.md) | Explicit bind address required | Rejects `0.0.0.0` to prevent accidental exposure |
 
 ## Open Questions
 
 Open questions are tracked in [open-questions.md](open-questions.md). Key
 questions affecting this document:
 
-- **OQ-04**: Should config reload support a Unix domain socket API in addition
-  to SIGHUP? (open)
+- ~~**OQ-04**: Should config reload support a Unix domain socket API in addition
+  to SIGHUP?~~ (resolved — ADR-014: Unix domain socket admin API added)
 - **OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual
   domains? (open)

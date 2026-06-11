@@ -40,22 +40,24 @@ details.
 - **Phase 1**: Multi-site reverse proxy with TLS termination
   - TLS termination with ACME (Let's Encrypt) multi-domain certificate management
   - Manual certificate paths as fallback mode
+  - Cipher suite restriction matching nginx scope (ECDHE-AES-GCM + TLS 1.3)
   - HTTP → HTTPS redirect
   - Host-based routing to multiple upstream services
   - Reverse proxy to Gitea at `127.0.0.1:3000` (git.alk.dev)
   - Reverse proxy to Deno/Fresh container for alk.dev (simple pass-through)
   - Proxy header injection (Host, X-Real-IP, X-Forwarded-For, X-Forwarded-Proto)
+  - Per-site upstream timeouts with sensible defaults (5s connect, 60s request)
   - Request rate limiting with fail2ban-compatible logging (global per-IP)
   - 100 MB body size limit (global)
-  - Configurable bind address (no `0.0.0.0` default)
-  - Health check endpoint
+  - Configurable bind address (must be explicit, no `0.0.0.0`)
+  - Local health check endpoint on separate port (default: 9900, localhost only)
+  - Unix domain socket admin API for config reload with feedback
   - Graceful shutdown (SIGTERM handling)
   - Systemd unit file
   - Dual licensing: MIT OR Apache-2.0
 
 - **Phase 2**: Operational hardening
   - Per-site rate limits and body limits
-  - Per-site upstream timeouts
   - Metrics endpoint (Prometheus-compatible)
   - Connection limits and timeouts
   - Log rotation
@@ -63,7 +65,6 @@ details.
 - **Phase 3**: Future enhancements
   - Wildcard subdomain support
   - Per-site TLS overrides (manual certs for specific domains)
-  - Unix domain socket config reload API
 
 ### Out of Scope
 
@@ -168,12 +169,19 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [009](decisions/009-signal-handling.md) | Signal handling strategy | signal-hook for SIGTERM/SIGINT/SIGHUP |
 | [010](decisions/010-multi-site-phase1.md) | Multi-site in Phase 1 | Multiple domains from initial release; avoids config migration later |
 | [011](decisions/011-multi-domain-tls.md) | Multi-domain TLS config | Single SAN certificate covering all domains via rustls-acme |
+| [012](decisions/012-cipher-suite-restriction.md) | Restrict cipher suites | Match nginx scope: ECDHE-AES-GCM for TLS 1.2, all TLS 1.3 |
+| [013](decisions/013-health-check-port.md) | Health check on separate local port | Localhost-only HTTP health check, configurable port |
+| [014](decisions/014-unix-socket-reload.md) | Unix domain socket config reload API | Programmatic reload with success/failure feedback |
+| [015](decisions/015-per-site-timeouts.md) | Per-site upstream timeouts with defaults | 5s connect / 60s request defaults, per-site overrides |
+| [016](decisions/016-explicit-bind-address.md) | Explicit bind address required | Rejects `0.0.0.0` to prevent accidental exposure |
+| [017](decisions/017-upstream-connection-defaults.md) | Upstream connection defaults | HTTP/1.1, no redirects, connection pooling |
+| [018](decisions/018-body-size-limit.md) | Request body size limit | 100 MB default matching nginx, Gitea push compatibility |
 
 ## Open Questions
 
 Open questions are tracked in [open-questions.md](open-questions.md). Key
 questions affecting this document:
 
-- **OQ-01**: Should cipher suites be restricted beyond rustls defaults? (open)
-- **OQ-03**: Should the health check endpoint be on a separate port? (open)
+- ~~**OQ-01**: Should cipher suites be restricted beyond rustls defaults?~~ (resolved — ADR-012)
+- ~~**OQ-03**: Should the health check endpoint be on a separate port?~~ (resolved — ADR-013)
 - **OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual domains? (open)

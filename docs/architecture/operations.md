@@ -109,23 +109,30 @@ Configurable via `log_level` in StaticConfig.
 
 ## Health Check
 
-### Endpoint
+### Local Health Check Port
+
+The primary health check endpoint is served on a separate local port (default:
+9900), bound to `127.0.0.1` only. This ensures health checks work even when TLS
+is misconfigured. See ADR-013 for the rationale.
 
 ```
-GET /health → 200 OK (empty body)
+GET http://127.0.0.1:9900/health → 200 OK (empty body)
 ```
 
-The health check endpoint is accessible on the main HTTPS listener. It returns
-200 if the process is alive and serving requests.
+The port is configurable via `health_check_port` in StaticConfig. Setting it
+to `0` disables the separate health check listener.
 
-**Limitation**: Since `/health` is served over TLS, it cannot detect TLS
-configuration errors that prevent the TLS handshake from completing. External
-monitoring should also check TCP connectivity to port 443 independently.
+### HTTPS Health Check (Fallback)
+
+When the local health check port is enabled, `/health` is also available on the
+main HTTPS listener for cases where TLS-level health verification is desired.
+External monitoring should prefer the local health check for liveness checks
+and can use the HTTPS endpoint for TLS verification.
 
 ### What It Checks
 
 - Process is running and the tokio runtime is responsive
-- TLS listener is accepting connections
+- TLS listener is accepting connections (HTTPS endpoint only)
 - Config is loaded (StaticConfig and DynamicConfig are initialized)
 
 It does **not** check upstream reachability. The health check answers "is the
@@ -180,12 +187,21 @@ The proxy handles three signals via `signal-hook` (see [ADR-009](decisions/009-s
 - **SIGTERM / SIGINT**: Graceful shutdown. Stop accepting new connections, wait
   for in-flight requests to complete (up to a configurable timeout), then exit.
 - **SIGHUP**: Config reload. Re-read the config file, validate, and swap
-  DynamicConfig if valid.
+  DynamicConfig if valid. No feedback on success or failure.
+- **Admin socket reload**: Send `reload` command via the Unix domain socket
+  (default: `/run/reverse-proxy/admin.sock`). Returns structured response
+  indicating success or failure. See ADR-014 for details.
 
 ### SIGHUP for Config Reload
 
 SIGHUP triggers config reload (see [config.md](config.md) for details). The
 process does not exit on SIGHUP.
+
+### Admin Socket for Config Reload
+
+The admin Unix domain socket provides programmatic config reload with feedback.
+This is useful for CI/CD pipelines and automation tools. See ADR-014 for the
+command protocol.
 
 ### Timeout
 
@@ -242,10 +258,13 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [006](decisions/006-rate-limiting-approach.md) | Token bucket rate limiting | In-memory per-IP token bucket matching nginx burst semantics |
 | [007](decisions/007-custom-log-format.md) | Custom structured log format | key=value pairs with RATE_LIMIT prefix for fail2ban |
 | [009](decisions/009-signal-handling.md) | Signal handling strategy | signal-hook for SIGTERM/SIGINT/SIGHUP |
+| [013](decisions/013-health-check-port.md) | Health check on separate local port | Localhost-only HTTP health check, configurable port |
+| [014](decisions/014-unix-socket-reload.md) | Unix domain socket config reload API | Programmatic reload with success/failure feedback |
 
 ## Open Questions
 
 Open questions are tracked in [open-questions.md](open-questions.md). Key
 questions affecting this document:
 
-- **OQ-03**: Should the health check endpoint be on a separate port? (open)
+- ~~**OQ-03**: Should the health check endpoint be on a separate port?~~ (resolved
+  — ADR-013: separate local port, default 9900, localhost only)

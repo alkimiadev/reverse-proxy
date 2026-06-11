@@ -7,19 +7,15 @@ last_updated: 2026-06-11
 
 ## TLS
 
-### OQ-01: Should cipher suites be restricted beyond rustls defaults?
+### ~~OQ-01: Should cipher suites be restricted beyond rustls defaults?~~
 
 - **Origin**: [tls.md](tls.md)
-- **Status**: open
+- **Status**: resolved
 - **Priority**: medium
-- **Context**: Our current nginx config explicitly restricts cipher suites to
-  four ECDHE-AES-GCM suites. rustls 0.23 with `aws_lc_rs` defaults to a
-  conservative set that excludes all weak ciphers (no SHA-1, no 3DES, no RC4,
-  no CBC-mode suites, no RSA key exchange). The defaults include TLS 1.3 suites
-  which nginx also allows. Restricting further would reduce compatibility with
-  older clients; not restricting means accepting a wider (but still safe) set
-  than the current nginx config.
-- **Cross-references**: ADR-005
+- **Resolution**: Restrict cipher suites to match the nginx scope: four
+  ECDHE-AES-GCM suites for TLS 1.2 plus all TLS 1.3 suites. This provides
+  behavioral parity during migration. See ADR-012.
+- **Cross-references**: ADR-005, ADR-012
 
 ### ~~OQ-02: What log format should fail2ban consume?~~
 
@@ -47,31 +43,28 @@ last_updated: 2026-06-11
 
 ## Logging and Monitoring
 
-### OQ-03: Should the health check endpoint be on a separate port?
+### ~~OQ-03: Should the health check endpoint be on a separate port?~~
 
 - **Origin**: [operations.md](operations.md)
-- **Status**: open
+- **Status**: resolved
 - **Priority**: low
-- **Context**: Currently the health check is on the main HTTPS listener at
-  `/health`. Alternatives: (a) separate unencrypted port for health checks
-  (simpler for load balancers but less secure), (b) admin port with its own
-  listener (more complex but isolates operational traffic), (c) on the main
-  listener (simplest, proposed approach). For a single-server deployment behind
-  no external load balancer, the main listener is fine.
-- **Cross-references**: None
+- **Resolution**: Add a configurable local health check port (default: 9900)
+  bound to `127.0.0.1` only. Health checks work even when TLS is misconfigured.
+  The main HTTPS `/health` endpoint remains available as a fallback. See
+  ADR-013.
+- **Cross-references**: ADR-013
 
 ## Configuration
 
-### OQ-04: Should config reload support a Unix domain socket API in addition to SIGHUP?
+### ~~OQ-04: Should config reload support a Unix domain socket API in addition to SIGHUP?~~
 
 - **Origin**: [config.md](config.md)
-- **Status**: open
+- **Status**: resolved
 - **Priority**: low
-- **Context**: Phase 1 uses SIGHUP for config reload, which is simple and proven.
-  A Unix domain socket API would allow programmatic reload (e.g., from an admin
-  tool or CI/CD pipeline) and could return success/failure status. This adds
-  complexity and is not needed for Phase 1.
-- **Cross-references**: None
+- **Resolution**: Yes. Add a Unix domain socket admin API alongside SIGHUP.
+  The socket accepts a `reload` command and returns structured success/failure
+  responses. SIGHUP is retained as a fallback. See ADR-014.
+- **Cross-references**: ADR-014
 
 ## Deployment
 
@@ -84,17 +77,16 @@ last_updated: 2026-06-11
   explicit IP address (not `0.0.0.0`). Multi-address binding is not needed for
   this single-server deployment. If needed in the future, `bind_addr` could be
   extended to an array. See config.md for the `bind_addr` field.
-- **Cross-references**: None
+- **Cross-references**: ADR-016
 
 ## Proxy
 
-### OQ-06: Should upstream timeouts be configurable per-site?
+### ~~OQ-06: Should upstream timeouts be configurable per-site?~~
 
 - **Origin**: [proxy.md](proxy.md)
-- **Status**: open
+- **Status**: resolved
 - **Priority**: low
-- **Context**: Phase 1 uses global defaults (5s connect timeout, 60s request
-  timeout) for all upstream connections. Per-site timeout configuration would
-  allow tuning for different upstream services (e.g., a slow database-backed
-  API vs. a fast static site). Not needed for Phase 1 with a single upstream.
-- **Cross-references**: None
+- **Resolution**: Yes. Per-site upstream timeouts with sensible defaults (5s
+  connect, 60s request). Optional fields in SiteConfig that override global
+  defaults when specified. See ADR-015.
+- **Cross-references**: ADR-015, ADR-017

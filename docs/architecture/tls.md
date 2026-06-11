@@ -115,25 +115,26 @@ regression if defaults change in future rustls releases.
 
 ### Cipher Suites
 
-rustls 0.23 with the `aws_lc_rs` crypto provider defaults to a conservative
-cipher suite selection that excludes all weak ciphers (no SHA-1, no 3DES, no
-RC4, no CBC-mode suites, no RSA key exchange).
+Cipher suites are explicitly restricted to match the scope of our current nginx
+configuration. See ADR-012 for the full rationale.
 
-The current nginx config explicitly restricts to:
+**TLS 1.2 (explicitly selected):**
 
-```
-ECDHE-ECDSA-AES128-GCM-SHA256
-ECDHE-RSA-AES128-GCM-SHA256
-ECDHE-ECDSA-AES256-GCM-SHA384
-ECDHE-RSA-AES256-GCM-SHA384
-```
+- `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`
+- `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`
+- `TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384`
+- `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384`
 
-rustls's defaults include these plus TLS 1.3 suites (which nginx's config
-also allows via `TLSv1.3`). The default rustls cipher list is a strict subset
-of what browsers accept.
+**TLS 1.3 (all default suites):**
 
-See [open-questions.md](open-questions.md) OQ-01 for whether to further
-restrict cipher suites beyond rustls defaults.
+- `TLS_AES_128_GCM_SHA256`
+- `TLS_AES_256_GCM_SHA384`
+- `TLS_CHACHA20_POLY1305_SHA256`
+
+This is configured by building a `CryptoProvider` with a custom `cipher_suite`
+list and passing it to `ServerConfig::builder_with_provider()`. The cipher
+list matches our current nginx configuration's scope, providing behavioral
+parity during migration.
 
 ### ServerConfig Construction
 
@@ -223,12 +224,13 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [005](decisions/005-tokio-rustls-direct.md) | tokio-rustls directly | Full control over TLS config and ACME resolver integration |
 | [010](decisions/010-multi-site-phase1.md) | Multi-site in Phase 1 | Multiple domains from initial release |
 | [011](decisions/011-multi-domain-tls.md) | Multi-domain TLS config | Single SAN certificate covering all domains via rustls-acme |
+| [012](decisions/012-cipher-suite-restriction.md) | Restrict cipher suites | Match nginx scope: four ECDHE-AES-GCM suites for TLS 1.2, all TLS 1.3 suites |
 
 ## Open Questions
 
 Open questions are tracked in [open-questions.md](open-questions.md). Key
 questions affecting this document:
 
-- **OQ-01**: Should cipher suites be restricted beyond rustls defaults? (open)
+- ~~**OQ-01**: Should cipher suites be restricted beyond rustls defaults?~~ (resolved — ADR-012: restrict to nginx scope)
 - **OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual
   domains? (open)

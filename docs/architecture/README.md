@@ -43,6 +43,13 @@ certificate via ACME.
 | [009](decisions/009-signal-handling.md) | Signal Handling Strategy | Accepted |
 | [010](decisions/010-multi-site-phase1.md) | Multi-Site Support in Phase 1 | Accepted |
 | [011](decisions/011-multi-domain-tls.md) | Multi-Domain TLS Configuration | Accepted |
+| [012](decisions/012-cipher-suite-restriction.md) | Restrict Cipher Suites to nginx Scope | Accepted |
+| [013](decisions/013-health-check-port.md) | Health Check on Separate Local Port | Accepted |
+| [014](decisions/014-unix-socket-reload.md) | Unix Domain Socket Config Reload API | Accepted |
+| [015](decisions/015-per-site-timeouts.md) | Per-Site Upstream Timeouts with Defaults | Accepted |
+| [016](decisions/016-explicit-bind-address.md) | Explicit Bind Address Requirement | Accepted |
+| [017](decisions/017-upstream-connection-defaults.md) | Upstream Connection Defaults | Accepted |
+| [018](decisions/018-body-size-limit.md) | Request Body Size Limit | Accepted |
 
 ## Open Questions
 
@@ -50,12 +57,12 @@ See [open-questions.md](open-questions.md) for the full tracker.
 
 | OQ | Question | Priority | Status |
 |----|----------|----------|--------|
-| OQ-01 | Should cipher suites be restricted beyond rustls defaults? | medium | open |
+| ~~OQ-01~~ | ~~Should cipher suites be restricted beyond rustls defaults?~~ | ~~medium~~ | **resolved** (ADR-012) |
 | ~~OQ-02~~ | ~~What log format should fail2ban consume?~~ | ~~high~~ | **resolved** (ADR-007) |
-| OQ-03 | Should the health check endpoint be on a separate port? | low | open |
-| OQ-04 | Config reload: SIGHUP only or also Unix socket API? | low | open |
+| ~~OQ-03~~ | ~~Should the health check endpoint be on a separate port?~~ | ~~low~~ | **resolved** (ADR-013) |
+| ~~OQ-04~~ | ~~Config reload: SIGHUP only or also Unix socket API?~~ | ~~low~~ | **resolved** (ADR-014) |
 | ~~OQ-05~~ | ~~Should the proxy bind to multiple addresses?~~ | ~~low~~ | **resolved** (single bind_addr sufficient) |
-| OQ-06 | Should upstream timeouts be configurable per-site? | low | open |
+| ~~OQ-06~~ | ~~Should upstream timeouts be configurable per-site?~~ | ~~low~~ | **resolved** (ADR-015) |
 | OQ-07 | Should per-site TLS overrides be supported for mixed ACME/manual domains? | low | open |
 
 ## Document Lifecycle
@@ -63,6 +70,6 @@ See [open-questions.md](open-questions.md) for the full tracker.
 | Status | Meaning | Transitions |
 |--------|---------|-------------|
 | `draft` | Under active development. May change significantly. | → `reviewed` when open questions are resolved |
-| `reviewed` | Architecture is final. Implementation may begin. | → `stable` when implementation is complete |
+| `reviewed` | Architecture is final. Implementation may begin. Changes require review. | → `stable` when implementation is complete |
 | `stable` | Locked. Changes require review and may warrant an ADR. | → `deprecated` when superseded |
 | `deprecated` | Superseded. Kept for reference. | Removed when no longer referenced |

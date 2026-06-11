@@ -109,11 +109,14 @@ The proxy handler constructs a new request to the upstream:
 5. Stream the response back to the client
 
 The hyper Client is created once at startup and shared via axum's `State`. It
-must be configured with:
+must be configured with (see ADR-017 for rationale):
 - Connection pooling (hyper default behavior)
-- Connect timeout: 5 seconds
-- Request timeout: 60 seconds
+- HTTP/1.1 only for upstream connections (HTTP/2 proxying is out of scope)
 - No redirect following (proxies should not follow redirects)
+
+Per-site timeout overrides are available via `upstream_connect_timeout_secs`
+and `upstream_request_timeout_secs` in `SiteConfig` (see ADR-015). When not
+specified, defaults of 5s connect and 60s request are used.
 
 ### 4. Error Handling
 
@@ -147,10 +150,11 @@ between the proxy and backend services on loopback is unnecessary.
 
 ## Body Size Limit
 
-axum's `DefaultBodyLimit` layer sets the maximum request body size. For
-compatibility with Gitea's push operations (large pack files), this defaults
-to 100 MB. In Phase 1, the body limit is a global setting; Phase 2 may add
-per-site body limits.
+axum's `DefaultBodyLimit` layer sets the maximum request body size. The default
+of 100 MB (104,857,600 bytes) matches our current nginx configuration and
+accommodates Gitea's push operations with large pack files (see ADR-018). In
+Phase 1, the body limit is a global setting; Phase 2 may add per-site body
+limits.
 
 ## Design Decisions
 
@@ -161,11 +165,14 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [002](decisions/002-custom-proxy-handler.md) | Custom proxy handler | One upstream per domain — simpler than a general proxy library |
 | [007](decisions/007-custom-log-format.md) | Custom structured log format | key=value pairs with RATE_LIMIT prefix for fail2ban |
 | [010](decisions/010-multi-site-phase1.md) | Multi-site in Phase 1 | Multiple domains from initial release |
+| [015](decisions/015-per-site-timeouts.md) | Per-site upstream timeouts with defaults | 5s connect / 60s request defaults, per-site overrides |
+| [017](decisions/017-upstream-connection-defaults.md) | Upstream connection defaults | HTTP/1.1, no redirects, connection pooling |
+| [018](decisions/018-body-size-limit.md) | Request body size limit | 100 MB default matching nginx, Gitea push compatibility |
 
 ## Open Questions
 
 Open questions are tracked in [open-questions.md](open-questions.md). Key
 questions affecting this document:
 
-- **OQ-06**: Should upstream timeouts be configurable per-site? (open — Phase 1
-  uses global defaults of 5s connect, 60s request)
+- ~~**OQ-06**: Should upstream timeouts be configurable per-site?~~ (resolved —
+  ADR-015: per-site timeout overrides with defaults)
