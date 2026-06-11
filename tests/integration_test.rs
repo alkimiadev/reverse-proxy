@@ -33,8 +33,9 @@ fn test_config_fixtures() {
 
 #[tokio::test]
 async fn test_health_check_local_port_returns_200() {
-    let (addr, handle) =
-        reverse_proxy::health::start_health_check_listener(0).await.unwrap();
+    let (addr, handle) = reverse_proxy::health::start_health_check_listener(0)
+        .await
+        .unwrap();
 
     let client = reqwest::Client::new();
     let resp = client
@@ -52,8 +53,9 @@ async fn test_health_check_local_port_returns_200() {
 
 #[tokio::test]
 async fn test_health_check_local_port_binds_localhost() {
-    let (addr, handle) =
-        reverse_proxy::health::start_health_check_listener(0).await.unwrap();
+    let (addr, handle) = reverse_proxy::health::start_health_check_listener(0)
+        .await
+        .unwrap();
 
     assert!(addr.ip().is_loopback());
     assert_eq!(addr.ip().to_string(), "127.0.0.1");

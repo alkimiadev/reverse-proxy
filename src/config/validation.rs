@@ -81,7 +81,6 @@ pub fn validate(
 
     let allow_wildcard = static_config.allow_wildcard_bind || cli_allow_wildcard_bind;
 
-    // Rule 1: At least one listener
     if static_config.listeners.is_empty() {
         errors.push(ValidationError::NoListeners);
     }
@@ -90,14 +89,12 @@ pub fn validate(
     let mut http_bind_keys = HashSet::new();
 
     for listener in &static_config.listeners {
-        // Rule 2: Wildcard bind address
         if listener.bind_addr == "0.0.0.0" && !allow_wildcard {
             errors.push(ValidationError::WildcardBindNotAllowed {
                 bind_addr: listener.bind_addr.clone(),
             });
         }
 
-        // Rule 3: Unique bind_addr:https_port
         let https_key = (listener.bind_addr.as_str(), listener.https_port);
         if !https_bind_keys.insert(https_key) {
             errors.push(ValidationError::DuplicateHttpsBind {
@@ -106,7 +103,6 @@ pub fn validate(
             });
         }
 
-        // Rule 10: Unique bind_addr:http_port (if http_port > 0)
         if listener.http_port > 0 {
             let http_key = (listener.bind_addr.as_str(), listener.http_port);
             if !http_bind_keys.insert(http_key) {
@@ -117,7 +113,6 @@ pub fn validate(
             }
         }
 
-        // Rule 12: https_port must be 1-65535
         if listener.https_port == 0 {
             errors.push(ValidationError::HttpsPortInvalid {
                 bind_addr: listener.bind_addr.clone(),
@@ -125,7 +120,6 @@ pub fn validate(
             });
         }
 
-        // Rule 11: http_port and https_port must differ
         if listener.http_port > 0 && listener.http_port == listener.https_port {
             errors.push(ValidationError::HttpsAndHttpPortSame {
                 bind_addr: listener.bind_addr.clone(),
@@ -134,10 +128,8 @@ pub fn validate(
             });
         }
 
-        // Rule 4 & 5: TLS mode validation
         match listener.tls.mode.as_str() {
             "acme" => {
-                // Rule 4: ACME domains must be non-empty
                 if listener.tls.acme_domains.is_empty() {
                     errors.push(ValidationError::AcmeDomainsEmpty {
                         bind_addr: listener.bind_addr.clone(),
@@ -148,12 +140,10 @@ pub fn validate(
                 let cert_empty = listener.tls.cert_path.is_empty();
                 let key_empty = listener.tls.key_path.is_empty();
                 if cert_empty || key_empty {
-                    // Rule 5: Both paths must be set
                     errors.push(ValidationError::ManualCertMissing {
                         bind_addr: listener.bind_addr.clone(),
                     });
                 } else {
-                    // Rule 5: Files must be readable
                     let cert_path = Path::new(&listener.tls.cert_path);
                     if !cert_path.exists() {
                         errors.push(ValidationError::CertPathNotReadable {
@@ -176,7 +166,6 @@ pub fn validate(
         }
     }
 
-    // Rule 14: health_check_port conflicts
     if static_config.health_check_port > 0 {
         for listener in &static_config.listeners {
             if static_config.health_check_port == listener.https_port {
@@ -196,50 +185,42 @@ pub fn validate(
         }
     }
 
-    // Site validation
     let mut site_hosts: HashSet<String> = HashSet::new();
 
     for listener in &static_config.listeners {
         for site in &listener.sites {
-            // Rule 6: host must be set
             if site.host.is_empty() {
                 errors.push(ValidationError::SiteHostEmpty {
                     host: String::new(),
                 });
             }
 
-            // Rule 6: upstream must be set
             if site.upstream.is_empty() {
                 errors.push(ValidationError::SiteUpstreamEmpty {
                     host: site.host.clone(),
                 });
             }
 
-            // Rule 16: Normalize hostname and check validity
             let normalized_host = site.host.to_lowercase();
 
-            // Rule 7: Unique hosts (case-insensitive)
             if !site_hosts.insert(normalized_host.clone()) {
                 errors.push(ValidationError::DuplicateSiteHost {
                     host: normalized_host,
                 });
             }
 
-            // Rule 15: Host must not contain port
             if site.host.contains(':') {
                 errors.push(ValidationError::SiteHostContainsPort {
                     host: site.host.clone(),
                 });
             }
 
-            // Rule 16: Host must be a valid hostname
             if !is_valid_hostname(&site.host) {
                 errors.push(ValidationError::SiteHostInvalid {
                     host: site.host.clone(),
                 });
             }
 
-            // Rule 17: Upstream must be host:port format
             if !site.upstream.is_empty() && !is_valid_upstream(&site.upstream) {
                 errors.push(ValidationError::UpstreamInvalid {
                     host: site.host.clone(),
@@ -247,7 +228,6 @@ pub fn validate(
                 });
             }
 
-            // Rule 18: upstream_scheme must be "http" or "https"
             if site.upstream_scheme != "http" && site.upstream_scheme != "https" {
                 errors.push(ValidationError::UpstreamSchemeInvalid {
                     host: site.host.clone(),
@@ -257,12 +237,10 @@ pub fn validate(
         }
     }
 
-    // Rule 8: requests_per_second > 0
     if dynamic_config.rate_limit.requests_per_second == 0 {
         errors.push(ValidationError::RequestsPerSecondZero { value: 0 });
     }
 
-    // Rule 9: body limit_bytes > 0
     if dynamic_config.body.limit_bytes == 0 {
         errors.push(ValidationError::BodyLimitBytesZero { value: 0 });
     }
