@@ -1,7 +1,7 @@
 ---
 id: config/dynamic-config
 name: Implement DynamicConfig with ArcSwap hot-reload and ConfigReloadHandle
-status: complete
+status: completed
 depends_on: [config/static-config]
 scope: moderate
 risk: medium

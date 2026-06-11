@@ -1,7 +1,7 @@
 ---
 id: proxy/host-routing
 name: Implement Host-based routing with global routing table from DynamicConfig
-status: complete
+status: completed
 depends_on: [config/dynamic-config]
 scope: narrow
 risk: low

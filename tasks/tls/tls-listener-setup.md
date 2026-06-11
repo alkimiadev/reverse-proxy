@@ -1,7 +1,7 @@
 ---
 id: tls/tls-listener-setup
 name: Implement multi-listener TLS setup with ConnectInfo propagation and per-listener routers
-status: complete
+status: completed
 depends_on: [tls/manual-tls, tls/acme-tls, config/static-config, config/dynamic-config]
 scope: broad
 risk: high

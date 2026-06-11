@@ -1,7 +1,7 @@
 ---
 id: tls/manual-tls
 name: Implement manual TLS certificate loading and ServerConfig construction
-status: complete
+status: completed
 depends_on: [setup/project-init]
 scope: narrow
 risk: low

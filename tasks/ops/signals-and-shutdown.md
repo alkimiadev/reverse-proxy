@@ -1,7 +1,7 @@
 ---
 id: ops/signals-and-shutdown
 name: Implement signal handling (SIGTERM/SIGINT/SIGHUP) and graceful shutdown sequence
-status: complete
+status: completed
 depends_on: [config/dynamic-config, ops/admin-socket]
 scope: moderate
 risk: medium

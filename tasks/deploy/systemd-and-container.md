@@ -1,7 +1,7 @@
 ---
 id: deploy/systemd-and-container
 name: Create systemd unit file, Dockerfile, and docker-compose.yml for production deployment
-status: complete
+status: completed
 depends_on: [ops/signals-and-shutdown]
 scope: moderate
 risk: low

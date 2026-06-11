@@ -1,7 +1,7 @@
 ---
 id: config/static-config
 name: Implement StaticConfig, ListenerConfig, TlsConfig, and LoggingConfig structs with TOML deserialization
-status: complete
+status: completed
 depends_on: [setup/project-init]
 scope: moderate
 risk: low

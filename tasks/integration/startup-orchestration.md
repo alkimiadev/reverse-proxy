@@ -1,7 +1,7 @@
 ---
 id: integration/startup-orchestration
 name: Wire startup sequence with all components and sd_notify readiness signaling
-status: complete
+status: completed
 depends_on: [config/cli-parsing, config/validation, config/dynamic-config, tls/tls-listener-setup, tls/http-redirect, proxy/host-routing, proxy/headers-and-forwarding, proxy/error-responses, ops/rate-limiting, ops/logging, ops/health-check, ops/admin-socket, ops/signals-and-shutdown, ops/body-size-limit]
 scope: broad
 risk: high

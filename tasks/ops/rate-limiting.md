@@ -1,7 +1,7 @@
 ---
 id: ops/rate-limiting
 name: Implement token bucket rate limiting with IPv6 /64 normalization and background eviction
-status: complete
+status: completed
 depends_on: [config/dynamic-config]
 scope: moderate
 risk: medium

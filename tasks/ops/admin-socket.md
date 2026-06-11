@@ -1,7 +1,7 @@
 ---
 id: ops/admin-socket
 name: Implement Unix domain socket admin API for config reload with feedback and status
-status: complete
+status: completed
 depends_on: [config/dynamic-config]
 scope: moderate
 risk: medium

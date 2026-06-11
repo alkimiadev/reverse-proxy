@@ -1,7 +1,7 @@
 ---
 id: proxy/error-responses
 name: Implement proxy error responses with plain text bodies and correct status codes
-status: complete
+status: completed
 depends_on: [proxy/host-routing]
 scope: single
 risk: trivial

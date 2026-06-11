@@ -1,7 +1,7 @@
 ---
 id: review/integration-readiness
 name: Review full integration and deployment readiness before release
-status: complete
+status: completed
 depends_on: [integration/startup-orchestration, deploy/systemd-and-container]
 scope: broad
 risk: medium

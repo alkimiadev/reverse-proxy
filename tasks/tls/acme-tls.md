@@ -1,7 +1,7 @@
 ---
 id: tls/acme-tls
 name: Implement ACME certificate provisioning with rustls-acme for automatic Let's Encrypt
-status: complete
+status: completed
 depends_on: [setup/project-init]
 scope: moderate
 risk: high

@@ -1,7 +1,7 @@
 ---
 id: tls/http-redirect
 name: Implement HTTP to HTTPS redirect listener with Host-based URL construction
-status: complete
+status: completed
 depends_on: [config/static-config, config/dynamic-config]
 scope: narrow
 risk: low

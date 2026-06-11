@@ -1,7 +1,7 @@
 ---
 id: ops/logging
 name: Implement structured logging with tracing, file output, and fail2ban-compatible format
-status: complete
+status: completed
 depends_on: [setup/project-init]
 scope: moderate
 risk: low
