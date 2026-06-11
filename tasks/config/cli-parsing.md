@@ -1,7 +1,7 @@
 ---
 id: config/cli-parsing
 name: Implement CLI argument parsing with clap and config file loading
-status: pending
+status: complete
 depends_on: [config/static-config, config/validation]
 scope: narrow
 risk: low
