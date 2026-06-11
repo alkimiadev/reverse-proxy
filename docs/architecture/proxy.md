@@ -14,8 +14,9 @@ injection, body size limits), and forwards it to the upstream service.
 ## Why It Exists
 
 This component replaces nginx's `proxy_pass` directive. For our use case —
-single upstream per domain, no load balancing, no HTTP/2 proxying — a custom
-handler is simpler and more maintainable than a general-purpose proxy library.
+one upstream per domain across multiple domains, no load balancing, no HTTP/2
+proxying — a custom handler is simpler and more maintainable than a
+general-purpose proxy library (ADR-002, ADR-010).
 
 ## Architecture
 
@@ -140,9 +141,9 @@ services typically run on the same host (e.g., `127.0.0.1:3000`). The
 `upstream_scheme` field in each site's configuration allows specifying `https://`
 for upstreams that require TLS (e.g., separate hosts or secure internal services).
 
-For the initial deployment (`git.alk.dev` → `127.0.0.1:3000`), the upstream
-connection uses plain HTTP, as TLS between the proxy and Gitea on loopback is
-unnecessary.
+For the initial deployment, upstream connections use plain HTTP (e.g.,
+`git.alk.dev` → `127.0.0.1:3000`, `alk.dev` → `127.0.0.1:8080`) since TLS
+between the proxy and backend services on loopback is unnecessary.
 
 ## Body Size Limit
 
@@ -157,8 +158,9 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 
 | ADR | Decision | Summary |
 |-----|----------|---------|
-| [002](decisions/002-custom-proxy-handler.md) | Custom proxy handler | Single upstream, single domain — simpler than a general proxy library |
+| [002](decisions/002-custom-proxy-handler.md) | Custom proxy handler | One upstream per domain — simpler than a general proxy library |
 | [007](decisions/007-custom-log-format.md) | Custom structured log format | key=value pairs with RATE_LIMIT prefix for fail2ban |
+| [010](decisions/010-multi-site-phase1.md) | Multi-site in Phase 1 | Multiple domains from initial release |
 
 ## Open Questions
 

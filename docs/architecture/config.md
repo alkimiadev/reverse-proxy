@@ -39,7 +39,7 @@ config.toml
 │  http_port           │     │  rate_limit           │
 │  https_port          │     │  body_limit           │
 │  tls.mode            │     │  proxy_headers        │
-│  tls.acme_domain     │     │                       │
+│  tls.acme_domains    │     │                       │
 │  tls.cert_path       │     │  ← ArcSwap →          │
 │  tls.key_path        │     │  ConfigReloadHandle    │
 │  tls.cache_dir       │     │  .reload(new_config)  │
@@ -59,11 +59,11 @@ Immutable after startup. Changes require a process restart.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `bind_addr` | `String` | IP address to bind to (e.g., `"15.235.125.95"`) |
+| `bind_addr` | `String` | IP address to bind to (must be explicit, no `0.0.0.0`) |
 | `http_port` | `u16` | Port for HTTP→HTTPS redirect (default: `80`; set to `0` to disable) |
 | `https_port` | `u16` | Port for TLS listener (default: `443`) |
 | `tls.mode` | `"acme"` or `"manual"` | Certificate provisioning mode |
-| `tls.acme_domain` | `String` | Domain for ACME (ACME mode only) |
+| `tls.acme_domains` | `Vec<String>` | Domains for ACME SAN certificate (ACME mode only) |
 | `tls.acme_cache_dir` | `String` | ACME state cache directory |
 | `tls.acme_directory` | `"production"` or `"staging"` | Let's Encrypt directory |
 | `tls.cert_path` | `String` | Certificate file path (manual mode only) |
@@ -71,9 +71,10 @@ Immutable after startup. Changes require a process restart.
 | `log_level` | `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` | Logging verbosity |
 | `log_format` | `"text"` or `"json"` | Log output format |
 
-**Why these are static:** Changing bind addresses, ports, or TLS mode requires
-creating new listeners and TLS configurations — operations that fundamentally
-require a restart. There's no safe way to change these at runtime.
+**Why these are static:** See ADR-008 for the rationale behind the
+static/dynamic split. In summary: changing bind addresses, ports, or TLS mode
+requires creating new listeners and TLS configurations — operations that
+fundamentally require a restart.
 
 ### DynamicConfig
 
@@ -95,10 +96,10 @@ connections immediately.
 | `upstream` | `String` | Upstream address (e.g., `"127.0.0.1:3000"`) |
 | `upstream_scheme` | `"http"` or `"https"` | Protocol for upstream connection (default: `"http"`) |
 
-**Why these are dynamic:** Site definitions and rate limits are per-request
-concerns. Adding a site or changing a rate limit should not require restarting
-the proxy and dropping active connections. Rate limits and body limits are
-global settings in Phase 1; per-site configuration for these may be added in
+**Why these are dynamic:** See ADR-008 for the rationale. Site definitions
+and rate limits are per-request concerns that should not require restarting
+the proxy or dropping active connections. Rate limits and body limits are
+global settings in Phase 1; per-site configuration for these is deferred to
 Phase 2.
 
 ## Config Reload
@@ -136,13 +137,13 @@ config reload, but SIGHUP is sufficient for Phase 1.
 # reverse-proxy config
 
 [server]
-bind_addr = "15.235.125.95"
+bind_addr = "203.0.113.10"  # Replace with actual bind address
 http_port = 80
 https_port = 443
 
 [server.tls]
 mode = "acme"                    # "acme" or "manual"
-acme_domain = "git.alk.dev"
+acme_domains = ["git.alk.dev", "alk.dev"]
 acme_cache_dir = "/var/lib/reverse-proxy/acme-cache"
 acme_directory = "production"    # "production" or "staging"
 
@@ -166,6 +167,11 @@ limit_bytes = 104857600          # 100 MB
 host = "git.alk.dev"
 upstream = "127.0.0.1:3000"
 upstream_scheme = "http"
+
+[[sites]]
+host = "alk.dev"
+upstream = "127.0.0.1:8080"
+upstream_scheme = "http"
 ```
 
 ### Validation
@@ -173,12 +179,13 @@ upstream_scheme = "http"
 On startup, the config is validated:
 
 1. `bind_addr` is not `0.0.0.0` (must be explicit)
-2. In ACME mode, `acme_domain` must be set
+2. In ACME mode, `acme_domains` must be non-empty
 3. In manual mode, `cert_path` and `key_path` must both be set and the files
    must be readable
 4. Each site must have a `host` and `upstream`
-5. `rate_limit.requests_per_second` must be > 0
-6. `body.limit_bytes` must be > 0
+5. Site `host` values must be unique (no duplicate hostnames)
+6. `rate_limit.requests_per_second` must be > 0
+7. `body.limit_bytes` must be > 0
 
 On SIGHUP reload, the same validation applies. If the new config fails
 validation, the reload is rejected and the old config remains active. An error
@@ -196,6 +203,8 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 |-----|----------|---------|
 | [003](decisions/003-toml-config.md) | TOML configuration format | Rust-native, unambiguous, excellent serde support |
 | [008](decisions/008-static-dynamic-config-split.md) | Static/dynamic config split | Immutable StaticConfig, hot-reloadable DynamicConfig via ArcSwap |
+| [010](decisions/010-multi-site-phase1.md) | Multi-site in Phase 1 | Multiple domains from initial release |
+| [011](decisions/011-multi-domain-tls.md) | Multi-domain TLS config | Single SAN certificate covering all domains |
 
 ## Open Questions
 
@@ -204,3 +213,5 @@ questions affecting this document:
 
 - **OQ-04**: Should config reload support a Unix domain socket API in addition
   to SIGHUP? (open)
+- **OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual
+  domains? (open)

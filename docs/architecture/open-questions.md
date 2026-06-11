@@ -21,8 +21,6 @@ last_updated: 2026-06-11
   than the current nginx config.
 - **Cross-references**: ADR-005
 
-## Logging and Monitoring
-
 ### ~~OQ-02: What log format should fail2ban consume?~~
 
 - **Origin**: [operations.md](operations.md), [proxy.md](proxy.md)
@@ -32,6 +30,22 @@ last_updated: 2026-06-11
   `RATE_LIMIT` prefix. A corresponding custom fail2ban filter will be provided.
   See ADR-007.
 - **Cross-references**: ADR-007
+
+### OQ-07: Should per-site TLS overrides be supported for mixed ACME/manual domains?
+
+- **Origin**: [tls.md](tls.md), [config.md](config.md)
+- **Status**: open
+- **Priority**: low
+- **Context**: Phase 1 uses a single TLS configuration (ACME or manual) for all
+  domains. All domains share the same ACME config and certificate. If a future
+  domain needs a manual certificate (e.g., a corporate CA cert) while other
+  domains use ACME, a per-site TLS override would be needed. This would require
+  a custom `ResolvesServerCert` that combines ACME-provisioned certs with
+  manually loaded certs. For now, all proxied domains use the same ACME config,
+  so this is not needed.
+- **Cross-references**: ADR-011
+
+## Logging and Monitoring
 
 ### OQ-03: Should the health check endpoint be on a separate port?
 
@@ -61,15 +75,15 @@ last_updated: 2026-06-11
 
 ## Deployment
 
-### OQ-05: Should the proxy bind to multiple addresses or just one?
+### ~~OQ-05: Should the proxy bind to multiple addresses or just one?~~
 
 - **Origin**: [overview.md](overview.md)
-- **Status**: open
+- **Status**: resolved
 - **Priority**: low
-- **Context**: Current nginx config binds to a specific IP (`15.235.125.95`).
-  The proposed config uses `bind_addr` which could be any IP. For Phase 1, the
-  config will specify a single IP address. Multi-address binding (listening on
-  multiple IPs) is not needed but could be added as an array of addresses.
+- **Resolution**: A single `bind_addr` is sufficient. The proxy binds to one
+  explicit IP address (not `0.0.0.0`). Multi-address binding is not needed for
+  this single-server deployment. If needed in the future, `bind_addr` could be
+  extended to an array. See config.md for the `bind_addr` field.
 - **Cross-references**: None
 
 ## Proxy

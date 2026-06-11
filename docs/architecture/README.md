@@ -14,6 +14,10 @@ memory-safe Rust/axum reverse proxy. The primary motivation is CVE-2026-42945
 (unauthenticated RCE in nginx's rewrite module) and the broader pattern of
 memory corruption bugs in nginx's C codebase.
 
+The proxy supports multiple domains from initial release (git.alk.dev and
+alk.dev), with per-domain host-based routing and a single multi-domain SAN
+certificate via ACME.
+
 ## Architecture Documents
 
 | Document | Status | Description |
@@ -37,6 +41,8 @@ memory corruption bugs in nginx's C codebase.
 | [007](decisions/007-custom-log-format.md) | Custom Structured Log Format | Accepted |
 | [008](decisions/008-static-dynamic-config-split.md) | Static/Dynamic Config Split with ArcSwap | Accepted |
 | [009](decisions/009-signal-handling.md) | Signal Handling Strategy | Accepted |
+| [010](decisions/010-multi-site-phase1.md) | Multi-Site Support in Phase 1 | Accepted |
+| [011](decisions/011-multi-domain-tls.md) | Multi-Domain TLS Configuration | Accepted |
 
 ## Open Questions
 
@@ -48,8 +54,9 @@ See [open-questions.md](open-questions.md) for the full tracker.
 | ~~OQ-02~~ | ~~What log format should fail2ban consume?~~ | ~~high~~ | **resolved** (ADR-007) |
 | OQ-03 | Should the health check endpoint be on a separate port? | low | open |
 | OQ-04 | Config reload: SIGHUP only or also Unix socket API? | low | open |
-| OQ-05 | Should the proxy bind to multiple addresses? | low | open |
+| ~~OQ-05~~ | ~~Should the proxy bind to multiple addresses?~~ | ~~low~~ | **resolved** (single bind_addr sufficient) |
 | OQ-06 | Should upstream timeouts be configurable per-site? | low | open |
+| OQ-07 | Should per-site TLS overrides be supported for mixed ACME/manual domains? | low | open |
 
 ## Document Lifecycle
 

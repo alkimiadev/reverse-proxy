@@ -57,10 +57,11 @@ no deploy hooks.
 
 **How it works:**
 
-1. `AcmeCertProvider` configures the ACME client with the domain, cache
+1. `AcmeCertProvider` configures the ACME client with the domain list, cache
    directory, and Let's Encrypt directory (staging or production).
-2. `AcmeConfig::new(vec![domain])` creates an ACME configuration for the
-   domain.
+2. `AcmeConfig::new(domains)` creates an ACME configuration for all listed
+   domains. Let's Encrypt will issue a single SAN certificate covering all
+   domains.
 3. The ACME state machine runs as a background tokio task, handling:
    - Account registration with Let's Encrypt
    - Certificate ordering
@@ -75,9 +76,9 @@ no deploy hooks.
 **Configuration:**
 
 ```toml
-[tls]
+[server.tls]
 mode = "acme"
-acme_domain = "git.alk.dev"
+acme_domains = ["git.alk.dev", "alk.dev"]
 acme_cache_dir = "/var/lib/reverse-proxy/acme-cache"
 acme_directory = "production"  # or "staging" for testing
 ```
@@ -100,13 +101,8 @@ key_path = "/etc/letsencrypt/live/git.alk.dev/privkey.pem"
 ```
 
 Certificate files are loaded once at startup using `rustls_pemfile`. Manual
-mode requires a restart to pick up new certificates.
-
-**Why not hot-reload manual certs?** ACME mode handles renewal automatically.
-Manual mode is for cases where you control cert rotation externally (certbot,
-manual renewal). In that case, a SIGHUP-triggered restart is simpler and more
-reliable than file watching. If zero-downtime cert rotation is needed, use ACME
-mode.
+mode requires a restart to pick up new certificates. See ADR-004 for the
+rationale behind making ACME the primary mode and manual mode restart-dependent.
 
 ## TLS Configuration
 
@@ -142,10 +138,13 @@ restrict cipher suites beyond rustls defaults.
 ### ServerConfig Construction
 
 For manual mode, the `ServerConfig` is built with `with_no_client_auth()` and
-`with_single_cert()`, loading the certificate chain and private key from disk.
+a custom `ResolvesServerCert` implementation that maps SNI hostnames to
+certificate/key pairs loaded from disk.
 
 For ACME mode, the `ServerConfig` is built with `with_cert_resolver()`, passing
-the `ResolvesServerCertAcme` resolver. The ACME TLS-ALPN-01 protocol identifier
+the `ResolvesServerCertAcme` resolver. The ACME configuration includes all
+domains listed in `acme_domains`, and the resolver manages a single SAN
+certificate covering all of them. The ACME TLS-ALPN-01 protocol identifier
 (`acme-tls/1`) must be registered in the `alpn_protocols` list so the server
 can respond to TLS-ALPN-01 challenges.
 
@@ -154,28 +153,39 @@ versions (TLS 1.2 and TLS 1.3).
 
 ## SNI-Based Certificate Selection
 
-### Current (Single Domain)
+### ACME Mode (Multi-Domain)
 
-For single-domain setups, SNI selection is trivial: there's only one
-certificate, so `with_single_cert()` or `ResolvesServerCertAcme` (which
-handles the domain) is sufficient.
-
-### Future (Multi-Domain)
-
-When multiple domains are served, SNI selection works as follows:
+In ACME mode, `rustls-acme` manages a single SAN certificate covering all
+configured domains. The `ResolvesServerCertAcme` resolver automatically serves
+the correct certificate during the TLS handshake.
 
 1. **TLS handshake**: The client sends the SNI extension indicating which
    hostname it's connecting to.
-2. **Certificate resolution**: In ACME mode, `ResolvesServerCertAcme` handles
-   this automatically — it stores certificates keyed by domain. In manual mode,
-   a custom `ResolvesServerCert` implementation maps SNI hostname to the
-   correct `CertifiedKey`.
+2. **Certificate resolution**: `ResolvesServerCertAcme` matches the SNI
+   hostname against the provisioned certificate's Subject Alternative Names
+   and serves the certificate.
 3. **HTTP routing**: After the TLS handshake, axum's `Host` extractor routes
    the request to the correct site handler based on the `Host` header.
 
 This is the same pattern nginx uses — SNI selects the cert during TLS, then
-`Host` header selects the server block. In manual mode, a `ResolvesServerCert`
-implementation maps SNI hostname to the correct `CertifiedKey`.
+`Host` header selects the server block. ACME mode handles this automatically
+through the cert resolver.
+
+### Manual Mode (Multi-Domain)
+
+In manual mode, a custom `ResolvesServerCert` implementation is required to
+map SNI hostnames to the correct `CertifiedKey`. This implementation:
+
+1. Loads certificate files at startup (or on SIGHUP for reload)
+2. Maps each domain name to its certificate chain and private key
+3. During the TLS handshake, looks up the SNI hostname and returns the
+   matching `CertifiedKey`
+
+The custom resolver must handle the case where no matching certificate exists
+for the SNI hostname — in this case, the handshake fails, which is the
+correct behavior (we don't serve a default certificate for unknown domains).
+
+See [open-questions.md](open-questions.md) OQ-07 for per-site TLS overrides.
 
 ## HTTP Listener (Port 80)
 
@@ -211,6 +221,8 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 |-----|----------|---------|
 | [004](decisions/004-rustls-acme.md) | ACME-primary cert management | Eliminates certbot; automatic provisioning and renewal |
 | [005](decisions/005-tokio-rustls-direct.md) | tokio-rustls directly | Full control over TLS config and ACME resolver integration |
+| [010](decisions/010-multi-site-phase1.md) | Multi-site in Phase 1 | Multiple domains from initial release |
+| [011](decisions/011-multi-domain-tls.md) | Multi-domain TLS config | Single SAN certificate covering all domains via rustls-acme |
 
 ## Open Questions
 
@@ -218,3 +230,5 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key
 questions affecting this document:
 
 - **OQ-01**: Should cipher suites be restricted beyond rustls defaults? (open)
+- **OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual
+  domains? (open)

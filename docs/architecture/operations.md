@@ -42,9 +42,10 @@ Requests` and logs the event with structured fields.
 ### State Eviction
 
 The per-IP token bucket state grows over time as new IPs are seen. A
-background task runs at a configurable interval (default: 60 seconds) and
-removes entries that haven't been accessed within the cleanup interval. This
-prevents unbounded memory growth.
+background task runs every 60 seconds (configurable) and removes entries
+whose last access timestamp is older than a configurable eviction age
+(default: 300 seconds / 5 minutes). This prevents unbounded memory growth
+while preserving recent entries that may still receive traffic.
 
 ### Fail2ban Integration
 
@@ -55,7 +56,7 @@ format decision.
 The log format uses `key=value` pairs with a `RATE_LIMIT` prefix:
 
 ```
-RATE_LIMIT client_ip=X.X.X.X host=Y.Z path=/W status=429
+RATE_LIMIT client_ip=203.0.113.50 host=Y.Z path=/W status=429
 ```
 
 A corresponding fail2ban filter and jail configuration are provided as part
@@ -71,15 +72,15 @@ log entries:
 1. **Access logs**: Every proxied request is logged at `info` level with
    structured fields.
 
-   ```
-   REQUEST client_ip=1.2.3.4 host=git.alk.dev method=GET path=/user/repo status=200 upstream=127.0.0.1:3000 duration_ms=45
-   ```
+```
+REQUEST client_ip=203.0.113.50 host=git.alk.dev method=GET path=/user/repo status=200 upstream=127.0.0.1:3000 duration_ms=45
+```
 
 2. **Event logs**: Rate limits, TLS errors, upstream failures, config reloads,
    etc.
 
    ```
-   RATE_LIMIT client_ip=1.2.3.4 host=git.alk.dev path=/login status=429
+   RATE_LIMIT client_ip=203.0.113.50 host=git.alk.dev path=/login status=429
    UPSTREAM_ERROR host=git.alk.dev upstream=127.0.0.1:3000 error="connection refused"
    CONFIG_RELOAD status=success sites=1
    ```
