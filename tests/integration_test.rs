@@ -248,3 +248,238 @@ async fn test_rate_limit_eviction_task() {
 
     handle.abort();
 }
+
+fn make_redirect_listener_config(
+    bind_addr: &str,
+    http_port: u16,
+    https_port: u16,
+) -> reverse_proxy::config::static_config::ListenerConfig {
+    reverse_proxy::config::static_config::ListenerConfig {
+        bind_addr: bind_addr.to_string(),
+        http_port,
+        https_port,
+        tls: reverse_proxy::config::static_config::TlsConfig {
+            mode: "manual".to_string(),
+            acme_domains: vec![],
+            acme_cache_dir: String::new(),
+            acme_directory: "production".to_string(),
+            cert_path: String::new(),
+            key_path: String::new(),
+        },
+        sites: vec![],
+    }
+}
+
+#[tokio::test]
+async fn test_http_redirect_returns_301_with_location() {
+    let config = make_redirect_listener_config("127.0.0.1", 0, 443);
+    let (addr, handle) = reverse_proxy::tls::redirect::start_http_redirect_listener(&config)
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/some/path", addr.port()))
+        .header("Host", "example.com")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), reqwest::StatusCode::MOVED_PERMANENTLY);
+    let location = resp.headers().get("location").unwrap().to_str().unwrap();
+    assert_eq!(location, "https://example.com/some/path");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_http_redirect_port_443_omitted_from_url() {
+    let config = make_redirect_listener_config("127.0.0.1", 0, 443);
+    let (addr, handle) = reverse_proxy::tls::redirect::start_http_redirect_listener(&config)
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/", addr.port()))
+        .header("Host", "example.com")
+        .send()
+        .await
+        .unwrap();
+
+    let location = resp.headers().get("location").unwrap().to_str().unwrap();
+    assert_eq!(location, "https://example.com/");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_http_redirect_non_443_port_included_in_url() {
+    let config = make_redirect_listener_config("127.0.0.1", 0, 8443);
+    let (addr, handle) = reverse_proxy::tls::redirect::start_http_redirect_listener(&config)
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/", addr.port()))
+        .header("Host", "example.com")
+        .send()
+        .await
+        .unwrap();
+
+    let location = resp.headers().get("location").unwrap().to_str().unwrap();
+    assert_eq!(location, "https://example.com:8443/");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_http_redirect_empty_host_returns_400() {
+    let config = make_redirect_listener_config("127.0.0.1", 0, 443);
+    let (addr, handle) = reverse_proxy::tls::redirect::start_http_redirect_listener(&config)
+        .await
+        .unwrap();
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: \r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut response = vec![0u8; 4096];
+    let n = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let response_str = String::from_utf8_lossy(&response[..n]);
+    assert!(
+        response_str.contains(" 400 "),
+        "expected 400 status, got: {response_str}"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_http_redirect_no_host_header_returns_400() {
+    let config = make_redirect_listener_config("127.0.0.1", 0, 443);
+    let (addr, handle) = reverse_proxy::tls::redirect::start_http_redirect_listener(&config)
+        .await
+        .unwrap();
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(b"GET / HTTP/1.0\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut response = vec![0u8; 4096];
+    let n = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let response_str = String::from_utf8_lossy(&response[..n]);
+    assert!(
+        response_str.contains(" 400 "),
+        "expected 400 status, got: {response_str}"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_http_redirect_strips_host_port() {
+    let config = make_redirect_listener_config("127.0.0.1", 0, 443);
+    let (addr, handle) = reverse_proxy::tls::redirect::start_http_redirect_listener(&config)
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/path", addr.port()))
+        .header("Host", "example.com:8080")
+        .send()
+        .await
+        .unwrap();
+
+    let location = resp.headers().get("location").unwrap().to_str().unwrap();
+    assert_eq!(location, "https://example.com/path");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_http_redirect_preserves_query_string() {
+    let config = make_redirect_listener_config("127.0.0.1", 0, 443);
+    let (addr, handle) = reverse_proxy::tls::redirect::start_http_redirect_listener(&config)
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(format!(
+            "http://127.0.0.1:{}/search?q=test&page=1",
+            addr.port()
+        ))
+        .header("Host", "git.alk.dev")
+        .send()
+        .await
+        .unwrap();
+
+    let location = resp.headers().get("location").unwrap().to_str().unwrap();
+    assert_eq!(location, "https://git.alk.dev/search?q=test&page=1");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_http_redirect_acme_challenge_returns_404() {
+    let config = make_redirect_listener_config("127.0.0.1", 0, 443);
+    let (addr, handle) = reverse_proxy::tls::redirect::start_http_redirect_listener(&config)
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!(
+            "http://127.0.0.1:{}/.well-known/acme-challenge/abc123",
+            addr.port()
+        ))
+        .header("Host", "example.com")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+    handle.abort();
+}
