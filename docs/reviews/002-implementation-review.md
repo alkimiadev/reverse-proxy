@@ -557,6 +557,108 @@ Consider splitting into connect-timeout and response-timeout in Phase 2. The
 `upstream_request_timeout_secs` fields, but `upstream_connect_timeout_secs` is
 unused (see W4).
 
+### W13. No Request Access Logging
+
+**File**: `src/proxy/handler.rs`, `src/logging/format.rs`
+
+**Problem**: The `proxy_handler` function does not log successful or failed proxied
+requests. The `log_request!` macro is defined in `src/logging/format.rs` but is
+never called anywhere in the codebase. Without request-level access logging, there
+is no observability into what the proxy is doing — no way to see which hosts are
+being requested, response status codes, upstream latency, or client IPs for normal
+traffic. This also means fail2ban cannot consume proxy access logs for the scanner-
+catching jails (nginx-badbots, nginx-botsearch) that were part of the original
+nginx setup.
+
+**Solution**: Add request logging in `proxy_handler` that emits a structured log
+line for every proxied request (method, host, path, status code, upstream address,
+duration, client IP). Use the `log_request!` macro that already exists. This is
+critical for production — without it, the proxy is operationally blind.
+
+---
+
+### W14. `is_https` Hardcoded to `true` on ProxyState
+
+**File**: `src/main.rs:77`
+
+**Problem**: `ProxyState.is_https` is always set to `true`:
+
+```rust
+let proxy_state = Arc::new(ProxyState {
+    config: config_arc.clone(),
+    http_client,
+    https_client,
+    is_https: true,
+});
+```
+
+This means `X-Forwarded-Proto` will always be set to `https` in
+`inject_proxy_headers`. For a TLS-terminating reverse proxy this is correct
+(since all connections arrive over TLS), but it's a latent bug if the proxy is
+ever used in a non-TLS context or if someone adds an HTTP listener that routes
+through the same handler.
+
+**Solution**: Either remove the `is_https` field and hardcode `"https"` in the
+header injection (with a comment explaining why), or derive the value from the
+listener configuration so each listener sets it correctly. For Phase 1, a comment
+explaining the assumption is sufficient.
+
+---
+
+### S9. Rate Limiting Silently Bypassed When No Client IP Found
+
+**File**: `src/rate_limit/mod.rs:78-79`
+
+**Problem**: When `rate_limit_middleware` cannot extract a client IP (no
+`X-Forwarded-For` header and no `ConnectInfo` extension), the request passes
+through without rate limiting. In the current deployment, `ConnectInfo` is always
+set by `ConnectInfoService` in `server.rs`, so this won't happen in practice.
+However, if the proxy were ever deployed without `ConnectInfo` propagation (e.g.,
+behind another load balancer that strips it), rate limiting would silently become
+a no-op for all requests.
+
+**Solution**: Consider logging a warning when a request has no identifiable
+client IP, and optionally returning a 429 or 503 instead of passing through.
+For Phase 1, add a comment documenting the fallthrough behavior.
+
+---
+
+### S10. Integration Test TOML Has Double-Nested Listeners Key
+
+**File**: `tests/integration_test.rs:514`
+
+**Problem**: The `write_valid_config` helper contains:
+
+```toml
+[[listeners.listeners.sites]]
+```
+
+This should be `[[listeners.sites]]` — the double-nested `listeners.listeners`
+is a TOML path that doesn't match the config schema. The test passes because the
+binary validates the file and exits with an error, and the test checks that
+`--validate` with this file fails (it's used as an invalid config test fixture).
+However, the variable name `write_valid_config` suggests it was intended to produce
+a valid config, and the invalid TOML path makes the test's intent unclear.
+
+**Solution**: Fix the TOML key to `[[listeners.sites]]` and verify the test still
+passes, or rename the function to `write_invalid_config` if the invalid TOML is
+intentional.
+
+---
+
+### S11. No Server Response Header Added by Proxy
+
+**File**: `src/proxy/handler.rs:85`
+
+**Problem**: The proxy strips the upstream `Server` header (per W8) but does not
+add its own `Server` header. Some load balancers, monitoring tools, and HTTP
+spec-compliant clients expect a `Server` header in responses. This is a minor
+observation, not a bug — omitting `Server` is a valid security hardening choice
+(hiding server identity).
+
+**Solution**: This is acceptable for Phase 1. If desired later, add a configurable
+`Server` header (e.g., `Server: reverse-proxy`) or leave it absent.
+
 ---
 
 ## Summary Statistics
@@ -564,8 +666,8 @@ unused (see W4).
 | Severity | Count | Status |
 |----------|-------|--------|
 | Critical | 4 | Must fix before production |
-| Warning | 12 | Should fix — correctness and robustness |
-| Suggestion | 8 | Consider for code quality |
+| Warning | 14 | Should fix — correctness and robustness |
+| Suggestion | 11 | Consider for code quality |
 
 ## Recommended Fix Priority
 
@@ -577,10 +679,13 @@ unused (see W4).
    stale warnings, confusing operators.
 4. **C3 (X-Forwarded-For comment)** — Correct behavior, just needs a clarifying
    comment to prevent future "fixes."
-5. **W1 (Shutdown drain)** — Can cause connection drops on graceful restart.
-6. **W4 (Connect timeout)** — Slow upstreams can exhaust the full request
+5. **W13 (No request access logging)** — Proxy is operationally blind without
+   access logs; fail2ban cannot consume proxy traffic data.
+6. **W1 (Shutdown drain)** — Can cause connection drops on graceful restart.
+7. **W4 (Connect timeout)** — Slow upstreams can exhaust the full request
    timeout budget.
-7. **W5 (Health path collision)** — Upstream `/health` endpoints are silently
+8. **W5 (Health path collision)** — Upstream `/health` endpoints are silently
    intercepted.
-8. **W7 (Admin socket shutdown)** — Cannot gracefully stop.
-9. **Remaining W and S findings** — Fix opportunistically.
+9. **W7 (Admin socket shutdown)** — Cannot gracefully stop.
+10. **W14 (is_https hardcoded)** — Latent bug for non-TLS contexts; needs comment.
+11. **Remaining W and S findings** — Fix opportunistically.
