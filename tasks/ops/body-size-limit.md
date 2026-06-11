@@ -1,7 +1,7 @@
 ---
 id: ops/body-size-limit
 name: Implement global request body size limit with axum DefaultBodyLimit middleware
-status: pending
+status: complete
 depends_on: [config/dynamic-config]
 scope: single
 risk: trivial
