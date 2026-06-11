@@ -34,7 +34,6 @@ pub(crate) fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
     })
 }
 
-#[allow(dead_code)]
 pub fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
     let file =
         File::open(path).with_context(|| format!("failed to open certificate file: {path}"))?;
@@ -48,7 +47,6 @@ pub fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
     Ok(certs)
 }
 
-#[allow(dead_code)]
 pub fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>> {
     let file =
         File::open(path).with_context(|| format!("failed to open private key file: {path}"))?;
@@ -58,7 +56,6 @@ pub fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>> {
     key.context(format!("no private key found in {path}"))
 }
 
-#[allow(dead_code)]
 pub fn build_manual_server_config(cert_path: &str, key_path: &str) -> Result<ServerConfig> {
     let certs = load_certs(cert_path)?;
     let key = load_private_key(key_path)?;
@@ -74,7 +71,6 @@ pub fn build_manual_server_config(cert_path: &str, key_path: &str) -> Result<Ser
     Ok(config)
 }
 
-#[allow(dead_code)]
 pub fn build_multi_domain_server_config(
     domain_certs: &HashMap<String, (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
 ) -> Result<ServerConfig> {
@@ -203,35 +199,46 @@ mod tests {
     #[test]
     fn test_cipher_suite_restriction() {
         let provider = crypto_provider();
+        assert_eq!(provider.cipher_suites.len(), 7);
+
         let cipher_suites: Vec<String> = provider
             .cipher_suites
             .iter()
-            .map(|cs| format!("{:?}", cs))
+            .map(|cs| format!("{cs:?}"))
             .collect();
 
-        assert!(cipher_suites
-            .iter()
-            .any(|cs| cs.contains("AES_256_GCM_SHA384")));
-        assert!(cipher_suites
-            .iter()
-            .any(|cs| cs.contains("AES_128_GCM_SHA256")));
-        assert!(cipher_suites
-            .iter()
-            .any(|cs| cs.contains("CHACHA20_POLY1305_SHA256")));
-        assert!(cipher_suites
-            .iter()
-            .any(|cs| cs.contains("ECDHE_ECDSA_WITH_AES_256_GCM_SHA384")));
-        assert!(cipher_suites
-            .iter()
-            .any(|cs| cs.contains("ECDHE_ECDSA_WITH_AES_128_GCM_SHA256")));
-        assert!(cipher_suites
-            .iter()
-            .any(|cs| cs.contains("ECDHE_RSA_WITH_AES_256_GCM_SHA384")));
-        assert!(cipher_suites
-            .iter()
-            .any(|cs| cs.contains("ECDHE_RSA_WITH_AES_128_GCM_SHA256")));
+        assert!(cipher_suites.iter().any(|cs| cs.contains("AES_256_GCM_SHA384")));
+        assert!(cipher_suites.iter().any(|cs| cs.contains("AES_128_GCM_SHA256")));
+        assert!(cipher_suites.iter().any(|cs| cs.contains("CHACHA20_POLY1305_SHA256")));
+        assert!(cipher_suites.iter().any(|cs| cs.contains("ECDHE_ECDSA_WITH_AES_256_GCM_SHA384")));
+        assert!(cipher_suites.iter().any(|cs| cs.contains("ECDHE_ECDSA_WITH_AES_128_GCM_SHA256")));
+        assert!(cipher_suites.iter().any(|cs| cs.contains("ECDHE_RSA_WITH_AES_256_GCM_SHA384")));
+        assert!(cipher_suites.iter().any(|cs| cs.contains("ECDHE_RSA_WITH_AES_128_GCM_SHA256")));
+    }
 
-        assert_eq!(provider.cipher_suites.len(), 7);
+    #[test]
+    fn test_no_chacha20_for_tls12() {
+        let provider = crypto_provider();
+        let tls12_chacha = provider.cipher_suites.iter().any(|cs| {
+            let dbg = format!("{cs:?}");
+            dbg.contains("ECDHE") && dbg.contains("CHACHA20")
+        });
+        assert!(
+            !tls12_chacha,
+            "TLS 1.2 ChaCha20 suites should not be present"
+        );
+    }
+
+    #[test]
+    fn test_protocol_versions_configured() {
+        let (certs, key) = generate_test_cert("test.example.com");
+        let provider = crypto_provider();
+        let _config = ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&TLS12, &TLS13])
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .unwrap();
     }
 
     #[test]
@@ -266,7 +273,8 @@ mod tests {
         let mut resolver = SniCertResolver::new();
         resolver.add("Example.COM", Arc::new(certified_key));
 
-        assert!(resolver.entries.get("example.com").is_some());
+        assert!(resolver.entries.contains_key("example.com"));
+        assert!(!resolver.entries.contains_key("Example.COM"));
     }
 
     #[test]
