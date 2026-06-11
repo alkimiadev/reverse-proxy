@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -7,15 +8,65 @@ use tokio::sync::Mutex;
 use super::static_config::StaticConfig;
 use super::validation::validate;
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct DynamicConfig {
+    pub sites: Vec<SiteConfig>,
+    pub routing_table: HashMap<String, SiteConfig>,
+    pub rate_limit: RateLimitConfig,
+    pub body: BodyConfig,
+}
+
+impl DynamicConfig {
+    pub fn from_sites(
+        sites: Vec<SiteConfig>,
+        rate_limit: RateLimitConfig,
+        body: BodyConfig,
+    ) -> Self {
+        let routing_table = build_routing_table(&sites);
+        Self {
+            sites,
+            routing_table,
+            rate_limit,
+            body,
+        }
+    }
+
+    pub fn lookup(&self, host: &str) -> Option<&SiteConfig> {
+        self.routing_table.get(&normalize_host(host))
+    }
+}
+
+impl PartialEq for DynamicConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.sites == other.sites && self.rate_limit == other.rate_limit && self.body == other.body
+    }
+}
+
+pub fn build_routing_table(sites: &[SiteConfig]) -> HashMap<String, SiteConfig> {
+    sites
+        .iter()
+        .map(|s| (s.host.to_lowercase(), s.clone()))
+        .collect()
+}
+
+pub fn normalize_host(host: &str) -> String {
+    let lower = host.to_lowercase();
+    lower.split(':').next().unwrap_or(&lower).to_string()
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct SerializableDynamicConfig {
     pub sites: Vec<SiteConfig>,
     pub rate_limit: RateLimitConfig,
     pub body: BodyConfig,
 }
 
-#[allow(dead_code)]
+impl From<SerializableDynamicConfig> for DynamicConfig {
+    fn from(value: SerializableDynamicConfig) -> Self {
+        DynamicConfig::from_sites(value.sites, value.rate_limit, value.body)
+    }
+}
+
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct SiteConfig {
     pub host: String,
@@ -28,42 +79,35 @@ pub struct SiteConfig {
     pub upstream_request_timeout_secs: u64,
 }
 
-#[allow(dead_code)]
 fn default_upstream_scheme() -> String {
     "http".to_string()
 }
 
-#[allow(dead_code)]
 fn default_connect_timeout() -> u64 {
     5
 }
 
-#[allow(dead_code)]
 fn default_request_timeout() -> u64 {
     60
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct RateLimitConfig {
     pub requests_per_second: u32,
     pub burst: u32,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct BodyConfig {
     pub limit_bytes: u64,
 }
 
-#[allow(dead_code)]
 pub struct ConfigReloadHandle {
     config: Arc<ArcSwap<DynamicConfig>>,
     static_config: StaticConfig,
     reload_mutex: Mutex<()>,
 }
 
-#[allow(dead_code)]
 impl ConfigReloadHandle {
     pub fn new(config: Arc<ArcSwap<DynamicConfig>>, static_config: StaticConfig) -> Self {
         Self {
@@ -153,6 +197,14 @@ mod tests {
             upstream_connect_timeout_secs: 5,
             upstream_request_timeout_secs: 60,
         });
+        let new_dynamic = DynamicConfig::from_sites(
+            new_dynamic.sites,
+            RateLimitConfig {
+                requests_per_second: 50,
+                burst: new_dynamic.rate_limit.burst,
+            },
+            new_dynamic.body,
+        );
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(handle.reload(test_fixtures::test_static_config(), new_dynamic))
@@ -196,6 +248,14 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let mut dynamic = initial.clone();
                 dynamic.rate_limit.requests_per_second = i * 10;
+                let dynamic = DynamicConfig::from_sites(
+                    dynamic.sites,
+                    RateLimitConfig {
+                        requests_per_second: i * 10,
+                        burst: dynamic.rate_limit.burst,
+                    },
+                    dynamic.body,
+                );
                 h.reload(test_fixtures::test_static_config(), dynamic).await
             }));
         }
@@ -221,5 +281,104 @@ mod tests {
         assert!(changes.contains(&"health_check_port".to_string()));
         assert!(changes.contains(&"logging".to_string()));
         assert_eq!(changes.len(), 2);
+    }
+
+    #[test]
+    fn normalize_host_converts_to_lowercase() {
+        assert_eq!(normalize_host("Git.Alk.DEV"), "git.alk.dev");
+    }
+
+    #[test]
+    fn normalize_host_strips_port() {
+        assert_eq!(normalize_host("git.alk.dev:443"), "git.alk.dev");
+        assert_eq!(normalize_host("GIT.ALK.DEV:8443"), "git.alk.dev");
+    }
+
+    #[test]
+    fn normalize_host_no_port() {
+        assert_eq!(normalize_host("git.alk.dev"), "git.alk.dev");
+    }
+
+    #[test]
+    fn normalize_host_empty_string() {
+        assert_eq!(normalize_host(""), "");
+    }
+
+    #[test]
+    fn routing_table_lookup_finds_site() {
+        let config = test_fixtures::test_dynamic_config();
+        let site = config.lookup("test.local");
+        assert!(site.is_some());
+        assert_eq!(site.unwrap().host, "test.local");
+    }
+
+    #[test]
+    fn routing_table_lookup_case_insensitive() {
+        let config = test_fixtures::test_dynamic_config();
+        let site = config.lookup("TEST.LOCAL");
+        assert!(site.is_some());
+        assert_eq!(site.unwrap().host, "test.local");
+    }
+
+    #[test]
+    fn routing_table_lookup_strips_port() {
+        let config = test_fixtures::test_dynamic_config();
+        let site = config.lookup("test.local:443");
+        assert!(site.is_some());
+        assert_eq!(site.unwrap().host, "test.local");
+    }
+
+    #[test]
+    fn routing_table_lookup_unknown_host() {
+        let config = test_fixtures::test_dynamic_config();
+        let site = config.lookup("unknown.example");
+        assert!(site.is_none());
+    }
+
+    #[test]
+    fn build_routing_table_multiple_sites() {
+        let sites = vec![
+            SiteConfig {
+                host: "git.example.com".to_string(),
+                upstream: "127.0.0.1:3000".to_string(),
+                upstream_scheme: "http".to_string(),
+                upstream_connect_timeout_secs: 5,
+                upstream_request_timeout_secs: 60,
+            },
+            SiteConfig {
+                host: "www.example.com".to_string(),
+                upstream: "127.0.0.1:8080".to_string(),
+                upstream_scheme: "http".to_string(),
+                upstream_connect_timeout_secs: 5,
+                upstream_request_timeout_secs: 60,
+            },
+        ];
+        let table = build_routing_table(&sites);
+        assert_eq!(table.len(), 2);
+        assert!(table.contains_key("git.example.com"));
+        assert!(table.contains_key("www.example.com"));
+    }
+
+    #[test]
+    fn dynamic_config_from_sites_builds_routing_table() {
+        let sites = vec![SiteConfig {
+            host: "My.Site".to_string(),
+            upstream: "127.0.0.1:8080".to_string(),
+            upstream_scheme: "http".to_string(),
+            upstream_connect_timeout_secs: 5,
+            upstream_request_timeout_secs: 60,
+        }];
+        let config = DynamicConfig::from_sites(
+            sites,
+            RateLimitConfig {
+                requests_per_second: 10,
+                burst: 20,
+            },
+            BodyConfig {
+                limit_bytes: 104857600,
+            },
+        );
+        assert!(config.routing_table.contains_key("my.site"));
+        assert_eq!(config.routing_table.len(), 1);
     }
 }

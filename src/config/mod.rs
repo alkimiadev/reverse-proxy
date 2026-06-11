@@ -4,7 +4,8 @@ pub mod test_fixtures;
 pub mod validation;
 
 pub use dynamic_config::{
-    BodyConfig, ConfigReloadHandle, DynamicConfig, RateLimitConfig, SiteConfig,
+    build_routing_table, normalize_host, BodyConfig, ConfigReloadHandle, DynamicConfig,
+    RateLimitConfig, SerializableDynamicConfig, SiteConfig,
 };
 pub use static_config::{ListenerConfig, LoggingConfig, StaticConfig, TlsConfig};
 pub use validation::{validate, ValidationError};

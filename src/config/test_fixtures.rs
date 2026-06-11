@@ -26,22 +26,22 @@ pub fn test_static_config() -> StaticConfig {
 }
 
 pub fn test_dynamic_config() -> DynamicConfig {
-    DynamicConfig {
-        sites: vec![SiteConfig {
+    DynamicConfig::from_sites(
+        vec![SiteConfig {
             host: "test.local".to_string(),
             upstream: "127.0.0.1:8080".to_string(),
             upstream_scheme: "http".to_string(),
             upstream_connect_timeout_secs: 5,
             upstream_request_timeout_secs: 60,
         }],
-        rate_limit: RateLimitConfig {
+        RateLimitConfig {
             requests_per_second: 10,
             burst: 20,
         },
-        body: BodyConfig {
+        BodyConfig {
             limit_bytes: 104857600,
         },
-    }
+    )
 }
 
 #[cfg(test)]
