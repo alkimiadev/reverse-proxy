@@ -116,6 +116,7 @@ will be handled via signal-based or built-in rotation.
 | `tls.acme_domains` | `Vec<String>` | Domains for ACME SAN certificate (ACME mode only) |
 | `tls.acme_cache_dir` | `String` | ACME state cache directory |
 | `tls.acme_directory` | `"production"` or `"staging"` | Let's Encrypt directory |
+| `tls.acme_contact` | `String` | Contact email for ACME registration (e.g., `"mailto:admin@example.com"`). Required for production; Let's Encrypt rejects registrations without a contact email. See OQ-10. |
 | `tls.cert_path` | `String` | Certificate file path (manual mode only) |
 | `tls.key_path` | `String` | Private key file path (manual mode only) |
 
@@ -174,6 +175,7 @@ Phase 2.
 | `listeners[].http_port` | `u16` | `80` | No |
 | `listeners[].https_port` | `u16` | `443` | No |
 | `listeners[].tls.acme_directory` | `String` | `"production"` | No |
+| `listeners[].tls.acme_contact` | `String` | — | Yes (ACME mode only) |
 | `sites[].upstream_scheme` | `String` | `"http"` | No |
 | `sites[].upstream_connect_timeout_secs` | `u64` | `5` | No |
 | `sites[].upstream_request_timeout_secs` | `u64` | `60` | No |
@@ -236,6 +238,13 @@ effect. This gives operators early feedback about config drift.
 Only the DynamicConfig portion is swapped via ArcSwap. StaticConfig changes
 require a process restart to take effect.
 
+**Important**: The `ConfigReloadHandle` must track the last-known StaticConfig
+so that it can correctly detect changes on subsequent reloads. After each
+successful reload, the stored StaticConfig is updated with the new value (via
+`ArcSwap<StaticConfig>` or similar interior mutability). This prevents stale
+warnings: if the same static config change is present on two consecutive
+reloads, the operator should see the warning only once, not on every reload.
+
 ### Reload Serialization
 
 Reload operations are serialized using a `tokio::sync::Mutex` on the reload
@@ -290,6 +299,7 @@ mode = "acme"
 acme_domains = ["git.alk.dev"]
 acme_cache_dir = "/var/lib/reverse-proxy/acme-cache-git"
 acme_directory = "production"
+acme_contact = "mailto:admin@alk.dev"
 
 [[listeners.sites]]
 host = "git.alk.dev"
@@ -347,6 +357,7 @@ mode = "acme"
 acme_domains = ["git.alk.dev", "alk.dev"]
 acme_cache_dir = "/var/lib/reverse-proxy/acme-cache"
 acme_directory = "production"
+acme_contact = "mailto:admin@alk.dev"
 
 [[listeners.sites]]
 host = "git.alk.dev"
@@ -391,6 +402,9 @@ On startup, the config is validated:
     `10.0.0.5` (missing port). The `upstream_scheme` field handles the protocol.
 18. `upstream_scheme` values are case-sensitive: only `"http"` or `"https"`
     (lowercase). Default is `"http"`.
+19. In ACME mode, `tls.acme_contact` must be a valid `mailto:` URI
+    (e.g., `"mailto:admin@example.com"`). Let's Encrypt requires a contact
+    email for production certificate requests.
 
 On SIGHUP reload, the same validation applies. If the new config fails
 validation, the reload is rejected and the old config remains active. An error

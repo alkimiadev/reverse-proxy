@@ -95,6 +95,12 @@ The `/health` path is a special case: it matches regardless of the `Host`
 header and is evaluated before host-based routing. A `GET /health` request on
 any hostname returns `200 OK` with an empty body.
 
+**Note**: This means any upstream application that uses `/health` for its own
+health checks will have those requests silently intercepted by the proxy and
+will never reach the upstream. If this is a concern, the health check path
+should be changed to a less common path (e.g., `/__health` or `/healthz`) or
+made configurable. See OQ-08.
+
 ### 2. Proxy Header Injection
 
 Headers are injected before forwarding. The proxy is an **edge proxy** — it
@@ -107,7 +113,7 @@ existing `X-Forwarded-For` headers from the client cannot be trusted.
 | `Host` | Original request `Host` header | Preserved as-is |
 | `X-Real-IP` | `ConnectInfo<SocketAddr>` remote IP | Set to client's IP address |
 | `X-Forwarded-For` | `ConnectInfo<SocketAddr>` remote IP | **Replaced**, not appended. The proxy is the edge proxy — there are no trusted proxies upstream, so existing `X-Forwarded-For` values from the client cannot be trusted. |
-| `X-Forwarded-Proto` | Determined by which listener port received the request | `https` for requests on the listener's `https_port`, `http` for requests on the listener's `http_port` |
+| `X-Forwarded-Proto` | Determined by which listener port received the request | `https` for requests on the listener's `https_port`, `http` for requests on the listener's `http_port`. Note: since the TLS-terminating listener only receives HTTPS connections, this is always `"https"` in practice. The HTTP redirect listener sends a 301 redirect rather than proxying, so `X-Forwarded-Proto` is not set there. See OQ-11. |
 
 **ConnectInfo propagation**: `ConnectInfo<SocketAddr>` is populated by
 extracting `TcpStream::peer_addr()` before wrapping the connection in

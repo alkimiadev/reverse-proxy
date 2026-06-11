@@ -67,6 +67,11 @@ See [open-questions.md](open-questions.md) for the full tracker.
 | ~~OQ-05~~ | ~~Should the proxy bind to multiple addresses?~~ | ~~low~~ | **resolved** (single bind_addr sufficient) |
 | ~~OQ-06~~ | ~~Should upstream timeouts be configurable per-site?~~ | ~~low~~ | **resolved** (ADR-015) |
 | ~~OQ-07~~ | ~~Should per-site TLS overrides be supported for mixed ACME/manual domains?~~ | ~~low~~ | **resolved** (ADR-019) |
+| OQ-08 | Should the `/health` path use a less common endpoint to avoid upstream collision? | medium | open |
+| OQ-09 | How should `upstream_connect_timeout_secs` be enforced? | medium | open |
+| OQ-10 | Should ACME contact email be a required config field? | high | open |
+| OQ-11 | How should `X-Forwarded-Proto` be derived per-listener? | medium | open |
+| OQ-12 | Should request access logging be mandatory or optional? | high | open |
 
 ## Document Lifecycle
 

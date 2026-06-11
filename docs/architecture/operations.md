@@ -107,7 +107,10 @@ All logs use `tracing` with structured fields. The proxy outputs two types of
 log entries:
 
 1. **Access logs**: Every proxied request is logged at `info` level with
-   structured fields.
+   structured fields. Access logging is **always-on** — it is the primary
+   observability mechanism for the proxy and is required for fail2ban
+   integration. There is no configuration option to disable access logging
+   (see OQ-12).
 
 ```
 REQUEST client_ip=203.0.113.50 host=git.alk.dev method=GET path=/user/repo status=200 upstream=127.0.0.1:3000 duration_ms=45
@@ -293,7 +296,9 @@ On SIGTERM or SIGINT, the proxy performs a graceful shutdown:
 2. **Close idle keep-alive connections** — Send `Connection: close` on any idle
    connections in the keep-alive pool.
 3. **Wait for in-flight requests** — Up to `shutdown_timeout_secs` (default: 30)
-   for active requests to complete.
+   for active requests to complete. Server tasks are joined (not aborted) so
+   that in-flight requests can drain normally. Only after the timeout expires
+   are remaining tasks aborted.
 4. **Force-close remaining connections** — After the timeout, any remaining
    connections are forcefully closed via TCP RST.
 5. **Cancel background tasks** — ACME renewal tasks, rate limiter eviction task,
@@ -477,6 +482,7 @@ mode = "acme"
 acme_domains = ["git.example.com"]
 acme_cache_dir = "/var/lib/reverse-proxy/acme-cache"
 acme_directory = "production"
+acme_contact = "mailto:admin@example.com"
 
 [[listeners.sites]]
 host = "git.example.com"

@@ -77,16 +77,19 @@ no deploy hooks.
    listed in that listener's `acme_domains`. Let's Encrypt will issue a
    certificate covering those domains (a single SAN certificate or a
    single-domain certificate, depending on how many domains are listed).
-3. The ACME state machine runs as a background tokio task per listener,
+3. The `acme_contact` field provides a contact email address (as a `mailto:`
+   URI) required by Let's Encrypt for production certificate requests. Without
+   a contact email, Let's Encrypt production API returns a 400-level error.
+4. The ACME state machine runs as a background tokio task per listener,
    handling:
    - Account registration with Let's Encrypt
    - Certificate ordering
    - TLS-ALPN-01 challenge (or HTTP-01 challenge)
    - Certificate issuance
    - Certificate renewal (automatic, ~30 days before expiry)
-4. `ResolvesServerCertAcme` is a rustls `ResolvesServerCert` implementation
+5. `ResolvesServerCertAcme` is a rustls `ResolvesServerCert` implementation
    that automatically serves the ACME-provisioned certificate.
-5. When a new certificate is issued, the resolver updates atomically — no
+6. When a new certificate is issued, the resolver updates atomically — no
    restart or signal handling needed.
 
 **Configuration (within a `[[listeners]]` entry):**
@@ -100,6 +103,7 @@ mode = "acme"
 acme_domains = ["git.alk.dev", "alk.dev"]
 acme_cache_dir = "/var/lib/reverse-proxy/acme-cache"
 acme_directory = "production"  # or "staging" for testing
+acme_contact = "mailto:admin@alk.dev"  # Required for Let's Encrypt production
 ```
 
 **Cache directory:** The `DirCache` from rustls-acme persists ACME account data,
