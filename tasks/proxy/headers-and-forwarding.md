@@ -1,7 +1,7 @@
 ---
 id: proxy/headers-and-forwarding
 name: Implement proxy header injection, hop-by-hop removal, and request forwarding with hyper Client
-status: pending
+status: complete
 depends_on: [proxy/host-routing]
 scope: moderate
 risk: medium
