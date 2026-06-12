@@ -184,13 +184,15 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
                     "ACME TLS configured"
                 );
             }
-            _ => {
-                warn!(
-                    addr = %listener_config.bind_addr,
-                    "unsupported TLS mode"
-                );
-            }
         }
+    }
+
+    if bound_listeners.len() != tls_acceptors.len() {
+        anyhow::bail!(
+            "listener/acceptor count mismatch: {} listeners, {} acceptors",
+            bound_listeners.len(),
+            tls_acceptors.len()
+        );
     }
 
     let _eviction_handle = start_eviction_task(
