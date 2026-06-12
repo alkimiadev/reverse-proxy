@@ -206,4 +206,108 @@ mod tests {
         assert!(limiter.check_and_consume(IpAddr::from([192, 168, 1, 1])));
         assert!(!limiter.check_and_consume(IpAddr::from([192, 168, 1, 1])));
     }
+
+    #[tokio::test]
+    async fn middleware_uses_connect_info_without_xff_header() {
+        let limiter = make_limiter(10, 5);
+
+        let app = axum::Router::new()
+            .route("/", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                rate_limit_middleware,
+            ))
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        for _ in 0..5 {
+            let resp = client
+                .get(format!("http://127.0.0.1:{}/", addr.port()))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        }
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/", addr.port()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn middleware_rejects_without_connect_info() {
+        let limiter = make_limiter(10, 20);
+
+        let app = axum::Router::new()
+            .route("/", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                rate_limit_middleware,
+            ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/", addr.port()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn middleware_ignores_xff_header_same_bucket() {
+        let limiter = make_limiter(10, 2);
+
+        let app = axum::Router::new()
+            .route("/", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                rate_limit_middleware,
+            ))
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/", addr.port()))
+            .header("X-Forwarded-For", "10.0.0.1")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/", addr.port()))
+            .header("X-Forwarded-For", "10.0.0.2")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/", addr.port()))
+            .header("X-Forwarded-For", "10.0.0.3")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+    }
 }
