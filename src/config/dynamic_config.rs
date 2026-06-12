@@ -50,8 +50,14 @@ pub fn build_routing_table(sites: &[SiteConfig]) -> HashMap<String, SiteConfig> 
 }
 
 pub fn normalize_host(host: &str) -> String {
-    let lower = host.to_lowercase();
-    lower.split(':').next().unwrap_or(&lower).to_string()
+    let stripped = crate::utils::strip_port_from_host(host);
+    let lower = stripped.to_lowercase();
+    lower
+        .strip_prefix('[')
+        .unwrap_or(&lower)
+        .strip_suffix(']')
+        .unwrap_or(&lower)
+        .to_string()
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -302,6 +308,26 @@ mod tests {
     #[test]
     fn normalize_host_empty_string() {
         assert_eq!(normalize_host(""), "");
+    }
+
+    #[test]
+    fn normalize_host_ipv6_with_port() {
+        assert_eq!(normalize_host("[::1]:443"), "::1");
+    }
+
+    #[test]
+    fn normalize_host_ipv6_long_with_port() {
+        assert_eq!(normalize_host("[2001:db8::1]:8080"), "2001:db8::1");
+    }
+
+    #[test]
+    fn normalize_host_ipv6_bare() {
+        assert_eq!(normalize_host("[::1]"), "::1");
+    }
+
+    #[test]
+    fn normalize_host_ipv6_uppercase() {
+        assert_eq!(normalize_host("[2001:DB8::1]:443"), "2001:db8::1");
     }
 
     #[test]
