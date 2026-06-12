@@ -1,7 +1,7 @@
 ---
 id: fix/integration-test-toml
 name: Fix double-nested listeners.listeners.sites in integration test TOML
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial
