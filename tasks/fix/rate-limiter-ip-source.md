@@ -1,7 +1,7 @@
 ---
 id: fix/rate-limiter-ip-source
 name: Fix rate limiter to use ConnectInfo only (ADR-025)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: high

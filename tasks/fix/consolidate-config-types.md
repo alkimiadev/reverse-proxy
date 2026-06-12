@@ -1,7 +1,7 @@
 ---
 id: fix/consolidate-config-types
 name: Delete RawConfig and use FullConfig in load_config (W6, S5)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: medium

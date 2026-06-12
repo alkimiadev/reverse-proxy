@@ -1,7 +1,7 @@
 ---
 id: fix/inflight-counter-increment
 name: Fix InFlightCounter to increment before spawning task (C2 + drain interval)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: medium
