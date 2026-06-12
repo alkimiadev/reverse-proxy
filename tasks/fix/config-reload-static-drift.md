@@ -1,7 +1,7 @@
 ---
 id: fix/config-reload-static-drift
 name: Fix ConfigReloadHandle static config drift causing stale diff warnings
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: medium
