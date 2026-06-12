@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
@@ -7,8 +6,6 @@ use anyhow::{bail, Context, Result};
 use rustls::crypto::aws_lc_rs::cipher_suite;
 use rustls::crypto::aws_lc_rs::{default_provider, kx_group};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::{ClientHello, ResolvesServerCert};
-use rustls::sign::CertifiedKey;
 use rustls::version::{TLS12, TLS13};
 use rustls::ServerConfig;
 use rustls::SupportedCipherSuite;
@@ -73,56 +70,6 @@ pub fn build_manual_server_config(cert_path: &str, key_path: &str) -> Result<Ser
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(config)
-}
-
-pub fn build_multi_domain_server_config(
-    domain_certs: &HashMap<String, (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-) -> Result<ServerConfig> {
-    let provider = crypto_provider();
-
-    let mut resolver = SniCertResolver::new();
-    for (domain, (certs, key)) in domain_certs {
-        let certified_key = CertifiedKey::from_der(certs.clone(), key.clone_key(), &provider)
-            .with_context(|| format!("failed to load cert/key for domain {domain}"))?;
-        resolver.add(domain, Arc::new(certified_key));
-    }
-
-    let config = ServerConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&TLS12, &TLS13])
-        .with_context(|| "failed to set protocol versions")?
-        .with_no_client_auth()
-        .with_cert_resolver(Arc::new(resolver));
-
-    let mut config = config;
-    // Advertise HTTP/2 and HTTP/1.1 via ALPN so clients can negotiate HTTP/2.
-    // Note: acme-tls/1 is NOT included here — it's only needed for ACME mode.
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-
-    Ok(config)
-}
-
-#[derive(Debug)]
-struct SniCertResolver {
-    entries: HashMap<String, Arc<CertifiedKey>>,
-}
-
-impl SniCertResolver {
-    fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-        }
-    }
-
-    fn add(&mut self, domain: &str, certified_key: Arc<CertifiedKey>) {
-        self.entries.insert(domain.to_lowercase(), certified_key);
-    }
-}
-
-impl ResolvesServerCert for SniCertResolver {
-    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        let server_name = client_hello.server_name()?;
-        self.entries.get(&server_name.to_lowercase()).cloned()
-    }
 }
 
 #[cfg(test)]
@@ -262,55 +209,6 @@ mod tests {
             .with_no_client_auth()
             .with_single_cert(certs, key)
             .unwrap();
-    }
-
-    #[test]
-    fn test_sni_resolver_known_domain() {
-        let (certs, key) = generate_test_cert("example.com");
-        let provider = crypto_provider();
-        let certified_key = CertifiedKey::from_der(certs, key, &provider).unwrap();
-        let mut resolver = SniCertResolver::new();
-        resolver.add("example.com", Arc::new(certified_key));
-
-        let resolved = resolver.entries.get("example.com");
-        assert!(resolved.is_some());
-    }
-
-    #[test]
-    fn test_sni_resolver_unknown_domain_returns_none() {
-        let (certs, key) = generate_test_cert("example.com");
-        let provider = crypto_provider();
-        let certified_key = CertifiedKey::from_der(certs, key, &provider).unwrap();
-        let mut resolver = SniCertResolver::new();
-        resolver.add("example.com", Arc::new(certified_key));
-
-        let resolved = resolver.entries.get("unknown.com");
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn test_sni_resolver_case_insensitive() {
-        let (certs, key) = generate_test_cert("Example.COM");
-        let provider = crypto_provider();
-        let certified_key = CertifiedKey::from_der(certs, key, &provider).unwrap();
-        let mut resolver = SniCertResolver::new();
-        resolver.add("Example.COM", Arc::new(certified_key));
-
-        assert!(resolver.entries.contains_key("example.com"));
-        assert!(!resolver.entries.contains_key("Example.COM"));
-    }
-
-    #[test]
-    fn test_build_multi_domain_server_config() {
-        let (certs1, key1) = generate_test_cert("site1.example.com");
-        let (certs2, key2) = generate_test_cert("site2.example.com");
-
-        let mut domain_certs = HashMap::new();
-        domain_certs.insert("site1.example.com".to_string(), (certs1, key1));
-        domain_certs.insert("site2.example.com".to_string(), (certs2, key2));
-
-        let config = build_multi_domain_server_config(&domain_certs).unwrap();
-        assert!(!config.ignore_client_order);
     }
 
     #[test]

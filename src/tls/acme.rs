@@ -50,6 +50,7 @@ impl AcmeTlsConfig {
         Ok(AcmeTlsSetup { resolver, state })
     }
 
+    #[cfg(test)]
     pub fn directory_url(&self) -> &str {
         match self.directory.as_str() {
             "production" => LETS_ENCRYPT_PRODUCTION_DIRECTORY,
