@@ -1,7 +1,7 @@
 ---
 id: fix/fragile-error-detection
 name: Replace fragile string matching for incomplete message error detection
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: low
