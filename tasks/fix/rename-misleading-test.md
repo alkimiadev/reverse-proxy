@@ -1,7 +1,7 @@
 ---
 id: fix/rename-misleading-test
 name: Rename misleading health check test and fix dynamic config test (W8, W9)
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial
