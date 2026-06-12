@@ -1,6 +1,5 @@
 use serde::Deserialize;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct StaticConfig {
     pub listeners: Vec<ListenerConfig>,
@@ -28,7 +27,6 @@ pub fn default_shutdown_timeout_secs() -> u64 {
     30
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ListenerConfig {
     pub bind_addr: String,
@@ -41,17 +39,14 @@ pub struct ListenerConfig {
     pub sites: Vec<crate::config::dynamic_config::SiteConfig>,
 }
 
-#[allow(dead_code)]
 fn default_http_port() -> u32 {
     80
 }
 
-#[allow(dead_code)]
 fn default_https_port() -> u16 {
     443
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct TlsConfig {
     pub mode: String,
@@ -69,12 +64,10 @@ pub struct TlsConfig {
     pub key_path: String,
 }
 
-#[allow(dead_code)]
 fn default_acme_directory() -> String {
     "production".to_string()
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
@@ -85,12 +78,10 @@ pub struct LoggingConfig {
     pub log_file_path: Option<String>,
 }
 
-#[allow(dead_code)]
 fn default_log_level() -> String {
     "info".to_string()
 }
 
-#[allow(dead_code)]
 fn default_log_format() -> String {
     "text".to_string()
 }

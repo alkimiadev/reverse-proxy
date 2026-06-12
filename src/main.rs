@@ -120,6 +120,7 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
                     AdminSocketError::Io(e) => {
                         error!("admin socket IO error: {}", e);
                     }
+                    _ => {}
                 }
             }
         });
@@ -181,6 +182,12 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
                 info!(
                     addr = %listener_config.bind_addr,
                     "ACME TLS configured"
+                );
+            }
+            _ => {
+                warn!(
+                    addr = %listener_config.bind_addr,
+                    "unsupported TLS mode"
                 );
             }
         }

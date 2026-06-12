@@ -14,6 +14,7 @@ use crate::shutdown::GracefulShutdown;
 use crate::config::ConfigReloadHandle;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AdminSocketError {
     #[error("admin socket disabled (empty path)")]
     Disabled,

@@ -2,6 +2,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProxyError {
     #[error("Bad Gateway")]
     BadGateway { host: String, upstream: String },

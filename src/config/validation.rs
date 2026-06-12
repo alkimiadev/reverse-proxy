@@ -7,6 +7,7 @@ use super::dynamic_config::DynamicConfig;
 use super::static_config::StaticConfig;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ValidationError {
     #[error("at least one listener must be defined")]
     NoListeners,
