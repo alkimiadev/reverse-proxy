@@ -1,7 +1,7 @@
 ---
 id: fix/remove-dead-code-remnants
 name: Remove dead code items identified in security review #003 (S1)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: trivial

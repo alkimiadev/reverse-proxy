@@ -1,7 +1,7 @@
 ---
 id: fix/connector-timeout-ceiling
 name: Raise connector timeout ceiling to 30s per ADR-026
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: low

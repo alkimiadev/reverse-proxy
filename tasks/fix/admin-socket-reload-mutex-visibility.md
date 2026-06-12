@@ -1,7 +1,7 @@
 ---
 id: fix/admin-socket-reload-mutex-visibility
 name: Gate AdminSocket::reload_mutex with #[cfg(test)] (W11)
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial

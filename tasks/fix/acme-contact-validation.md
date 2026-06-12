@@ -1,7 +1,7 @@
 ---
 id: fix/acme-contact-validation
 name: Validate ACME contact email has non-empty address with @ sign (W2)
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial

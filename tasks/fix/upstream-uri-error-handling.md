@@ -1,7 +1,7 @@
 ---
 id: fix/upstream-uri-error-handling
 name: Return 502 on upstream URI parse failure instead of dropping query string (W3)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low

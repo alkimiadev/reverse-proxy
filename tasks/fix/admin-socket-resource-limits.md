@@ -1,7 +1,7 @@
 ---
 id: fix/admin-socket-resource-limits
 name: Add read timeout and line length limit to admin socket (ADR-027)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
