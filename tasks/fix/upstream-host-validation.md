@@ -1,7 +1,7 @@
 ---
 id: fix/upstream-host-validation
 name: Validate host part of upstream address in config (W1)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
