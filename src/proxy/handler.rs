@@ -81,6 +81,13 @@ async fn proxy_handler(
     };
 
     let request_timeout = Duration::from_secs(site.upstream_request_timeout_secs);
+    // The timeout covers the entire HTTP round-trip including response body
+    // streaming. For large file downloads or slow upstreams, this means the
+    // timeout kills the response even if the upstream is actively sending data.
+    // A more precise timeout would apply only to connect + first-byte, then
+    // stream the body without a timeout. The `upstream_connect_timeout_secs`
+    // field in SiteConfig exists for a separate connect timeout (see W4).
+    // For Phase 1, this full-request timeout is acceptable.
 
     let result = if upstream_scheme == "https" {
         tokio::time::timeout(request_timeout, state.https_client.request(upstream_req)).await
