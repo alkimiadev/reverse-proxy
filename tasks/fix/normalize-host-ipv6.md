@@ -1,7 +1,7 @@
 ---
 id: fix/normalize-host-ipv6
 name: Fix normalize_host to handle IPv6 bracket notation
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: low
