@@ -1,7 +1,7 @@
 ---
 id: fix/add-code-comments
 name: Add clarifying code comments for correct-but-non-obvious behaviors
-status: pending
+status: completed
 depends_on: [fix/remove-health-and-hardcode-https]
 scope: narrow
 risk: trivial
