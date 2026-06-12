@@ -227,11 +227,11 @@ fn build_upstream_request(req: Request<Body>, upstream_uri: &Uri) -> anyhow::Res
     builder.body(req.into_body()).map_err(Into::into)
 }
 
-const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 5;
+const CONNECT_TIMEOUT_CEILING_SECS: u64 = 30;
 
 pub fn create_http_client() -> Client<HttpConnector, Body> {
     let mut connector = HttpConnector::new();
-    connector.set_connect_timeout(Some(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS)));
+    connector.set_connect_timeout(Some(Duration::from_secs(CONNECT_TIMEOUT_CEILING_SECS)));
     Client::builder(TokioExecutor::new())
         .pool_idle_timeout(Duration::from_secs(90))
         .build(connector)
@@ -239,7 +239,7 @@ pub fn create_http_client() -> Client<HttpConnector, Body> {
 
 pub fn create_https_client() -> Client<hyper_rustls::HttpsConnector<HttpConnector>, Body> {
     let mut http_connector = HttpConnector::new();
-    http_connector.set_connect_timeout(Some(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS)));
+    http_connector.set_connect_timeout(Some(Duration::from_secs(CONNECT_TIMEOUT_CEILING_SECS)));
     http_connector.enforce_http(false);
 
     let tls_config = rustls::ClientConfig::builder()
