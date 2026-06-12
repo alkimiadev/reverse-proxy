@@ -229,6 +229,81 @@ async fn test_rate_limit_per_ip_independent() {
 }
 
 #[tokio::test]
+async fn test_rate_limit_without_connect_info_rejected_with_429() {
+    let mut config = reverse_proxy::config::test_fixtures::test_dynamic_config();
+    config.rate_limit = reverse_proxy::config::RateLimitConfig {
+        requests_per_second: 10,
+        burst: 20,
+    };
+    let config_arc = Arc::new(ArcSwap::from_pointee(config));
+    let limiter = Arc::new(reverse_proxy::rate_limit::RateLimiter::new(config_arc));
+
+    let app = Router::new().route("/", get(|| async { "ok" })).layer(
+        axum::middleware::from_fn_with_state(
+            limiter,
+            reverse_proxy::rate_limit::rate_limit_middleware,
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async { axum::serve(listener, app).await.unwrap() });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/", addr.port()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "Too Many Requests");
+}
+
+#[tokio::test]
+async fn test_rate_limit_xff_header_ignored_same_bucket() {
+    let mut config = reverse_proxy::config::test_fixtures::test_dynamic_config();
+    config.rate_limit = reverse_proxy::config::RateLimitConfig {
+        requests_per_second: 10,
+        burst: 2,
+    };
+    let config_arc = Arc::new(ArcSwap::from_pointee(config));
+    let limiter = Arc::new(reverse_proxy::rate_limit::RateLimiter::new(config_arc));
+
+    let app = make_rate_limit_app(limiter);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async { axum::serve(listener, app).await.unwrap() });
+
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/", addr.port()))
+        .header("X-Forwarded-For", "10.0.0.1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/", addr.port()))
+        .header("X-Forwarded-For", "10.0.0.2")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/", addr.port()))
+        .header("X-Forwarded-For", "10.0.0.3")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn test_rate_limit_eviction_task() {
     let mut config = reverse_proxy::config::test_fixtures::test_dynamic_config();
     config.rate_limit = reverse_proxy::config::RateLimitConfig {
