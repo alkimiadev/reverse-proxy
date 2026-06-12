@@ -39,11 +39,14 @@ async fn proxy_handler(
     let host = req
         .headers()
         .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok());
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| req.uri().host())
+        .unwrap_or_default();
 
-    let host = match host {
-        Some(h) => h,
-        None => return ProxyError::MissingHost.into_response(),
+    let host = if host.is_empty() {
+        return ProxyError::MissingHost.into_response();
+    } else {
+        host
     };
 
     let config = state.config.load();

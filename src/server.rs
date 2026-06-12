@@ -6,6 +6,7 @@ use axum::extract::ConnectInfo;
 use axum::http::Request;
 use axum::response::Response;
 use axum::Router;
+use hyper::body::Incoming;
 use hyper_util::rt::TokioExecutor;
 use hyper_util::service::TowerToHyperService;
 use tokio::net::TcpListener;
@@ -80,24 +81,40 @@ pub async fn serve_https_listener(
                         }
                     };
 
+                    let alpn = tls_stream.get_ref().1.alpn_protocol();
+                    let is_h2 = alpn == Some(b"h2");
+
                     let svc = ConnectInfoService {
-                        inner: router.into_service::<hyper::body::Incoming>(),
+                        inner: router.into_service::<Incoming>(),
                         remote_addr,
                     };
-
                     let svc = TowerToHyperService::new(svc);
+
                     let io = hyper_util::rt::TokioIo::new(tls_stream);
 
-                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
-                        .serve_connection_with_upgrades(io, svc)
-                        .await
-                    {
-                        if let Some(hyper_err) = e.downcast_ref::<hyper::Error>() {
-                            if hyper_err.is_incomplete_message() {
-                                return;
-                            }
+                    if is_h2 {
+                        let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
+                        if let Err(e) = builder
+                            .enable_connect_protocol()
+                            .serve_connection(io, svc)
+                            .await
+                        {
+                            error!(error = %e, "HTTPS/2 connection error");
                         }
-                        error!(error = %e, "HTTPS connection error");
+                    } else {
+                        let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+                        builder.http2().enable_connect_protocol();
+                        if let Err(e) = builder
+                            .serve_connection_with_upgrades(io, svc)
+                            .await
+                        {
+                            if let Some(hyper_err) = e.downcast_ref::<hyper::Error>() {
+                                if hyper_err.is_incomplete_message() {
+                                    return;
+                                }
+                            }
+                            error!(error = %e, "HTTPS connection error");
+                        }
                     }
                 });
             }
@@ -135,11 +152,10 @@ struct ConnectInfoService<S> {
     remote_addr: SocketAddr,
 }
 
-impl<S, B> Service<Request<B>> for ConnectInfoService<S>
+impl<S> Service<Request<Incoming>> for ConnectInfoService<S>
 where
-    S: Service<Request<B>, Response = Response> + Clone + Send + 'static,
+    S: Service<Request<Incoming>, Response = Response> + Clone + Send + 'static,
     S::Future: Send + 'static,
-    B: Send + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -152,7 +168,7 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, mut req: Request<B>) -> Self::Future {
+    fn call(&mut self, mut req: Request<Incoming>) -> Self::Future {
         req.extensions_mut().insert(ConnectInfo(self.remote_addr));
         self.inner.call(req)
     }
