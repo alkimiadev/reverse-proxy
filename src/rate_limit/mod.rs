@@ -76,6 +76,11 @@ pub async fn rate_limit_middleware(
         });
 
     let Some(ip) = client_ip else {
+        // If no client IP can be identified, the request passes through without rate
+        // limiting. In practice, ConnectInfo is always set by the server's
+        // ConnectInfoService, so this branch is unreachable. If the proxy were ever
+        // deployed without ConnectInfo propagation, rate limiting would silently become
+        // a no-op. Consider adding a warning log or returning 429 in a future phase.
         return next.run(req).await;
     };
 

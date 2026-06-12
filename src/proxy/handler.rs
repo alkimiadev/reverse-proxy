@@ -110,6 +110,9 @@ async fn proxy_handler(
             );
             let (mut parts, body) = upstream_resp.into_parts();
             remove_hop_by_hop(&mut parts.headers);
+            // The upstream Server header is intentionally removed. As a security-focused
+            // reverse proxy, we hide upstream server identity as a defense-in-depth measure.
+            // The proxy does not add its own Server header either. See W8 in review #002.
             parts.headers.remove("server");
             let body = Body::new(body);
             Response::from_parts(parts, body)

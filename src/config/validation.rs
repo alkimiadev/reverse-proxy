@@ -181,6 +181,10 @@ pub fn validate(
         }
     }
 
+    // Health check always binds to 127.0.0.1 (hardcoded in src/health.rs), so this
+    // conflict check is conservative — it warns even when the health check port
+    // wouldn't actually conflict (e.g., health check on 127.0.0.1:80 vs listener
+    // on 203.0.113.10:80). This is acceptable for Phase 1.
     if static_config.health_check_port > 0 {
         for listener in &static_config.listeners {
             if static_config.health_check_port == listener.https_port {

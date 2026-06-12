@@ -25,6 +25,10 @@ pub fn inject_proxy_headers(headers: &mut HeaderMap, remote_addr: SocketAddr) {
 
     headers.insert(HeaderName::from_static("x-real-ip"), ip_value.clone());
 
+    // X-Forwarded-For is SET (not appended) because this proxy is the outermost
+    // edge proxy. Any existing X-Forwarded-For from the client is untrusted and
+    // must be replaced with the actual client IP from ConnectInfo.
+    // See ADR-021 for the edge proxy model rationale.
     headers.insert(HeaderName::from_static("x-forwarded-for"), ip_value);
 
     // X-Forwarded-Proto is always "https" because this proxy only forwards requests

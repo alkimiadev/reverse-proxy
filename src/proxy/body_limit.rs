@@ -23,6 +23,10 @@ pub async fn body_limit_middleware(
         limit
     };
 
+    // Early rejection: if Content-Length is present and exceeds the limit, reject
+    // immediately without reading the body. For requests without Content-Length
+    // (chunked, HTTP/2), the Limited body wrapper below enforces the limit during
+    // streaming. This is a two-layer defense.
     if let Some(content_length) = request.headers().get("content-length") {
         if let Ok(length_str) = content_length.to_str() {
             if let Ok(length) = length_str.parse::<u64>() {
