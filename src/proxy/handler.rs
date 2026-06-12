@@ -12,7 +12,7 @@ use axum::Router;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::config::dynamic_config::DynamicConfig;
 use crate::log_request;
@@ -249,10 +249,23 @@ fn root_certs() -> rustls::RootCertStore {
     for cert in result.certs {
         roots.add(cert).ok();
     }
-    if !result.errors.is_empty() {
-        for err in &result.errors {
-            warn!(error = %err, "failed to load native certificate");
-        }
+    let cert_count = roots.len();
+    let error_count = result.errors.len();
+    if cert_count == 0 {
+        warn!(
+            certs_loaded = cert_count,
+            errors = error_count,
+            "no system root certificates loaded — HTTPS upstream connections will fail"
+        );
+    } else {
+        info!(
+            certs_loaded = cert_count,
+            errors = error_count,
+            "loaded system root certificates"
+        );
+    }
+    for err in &result.errors {
+        warn!(error = %err, "failed to load native certificate");
     }
     roots
 }
