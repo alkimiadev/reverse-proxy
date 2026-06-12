@@ -1,5 +1,5 @@
 ---
-status: reviewed
+status: draft
 last_updated: 2026-06-12
 ---
 
@@ -46,7 +46,7 @@ Incoming HTTPS request (HTTP/1.1 or HTTP/2)
         ▼
 ┌─────────────────┐
 │ Rate Limiting    │  ← tower middleware layer
-│ Middleware        │
+│ Middleware        │  ← IP from ConnectInfo only (ADR-025)
 └───────┬─────────┘
         │
         ▼
@@ -116,7 +116,21 @@ port (default: 9900, bound to `127.0.0.1` only) and the admin socket's `status`
 command — not by intercepting traffic on the public-facing proxy. See ADR-013
 and ADR-022.
 
-### 2. Proxy Header Injection
+### 2. Rate Limiter IP Source
+
+The rate limiting middleware runs **before** the proxy handler. At that point,
+no proxy headers have been injected — any `X-Forwarded-For` header present is
+from the client and is untrusted. The rate limiter must use
+`ConnectInfo<SocketAddr>` as the **sole** source of client IP addresses.
+Client-supplied `X-Forwarded-For` headers must not be consulted for rate
+limiting. See ADR-025.
+
+`ConnectInfo<SocketAddr>` is always present because each listener populates it
+via `into_make_service_with_connect_info::<SocketAddr>()`. If `ConnectInfo`
+is absent, the request must be rejected rather than falling back to an
+untrusted header.
+
+### 3. Proxy Header Injection
 
 Headers are injected before forwarding. The proxy is an **edge proxy** — it
 sits directly in front of the internet with no trusted proxies upstream. This
@@ -135,12 +149,16 @@ extracting `TcpStream::peer_addr()` before wrapping the connection in
 `TlsStream`. Each listener provides this information to its axum Router via
 `axum::ServiceExt::into_make_service_with_connect_info::<SocketAddr>()`.
 
-### 3. Request Forwarding
+### 4. Request Forwarding
 
 The proxy handler constructs a new request to the upstream:
 
 1. Build the upstream URI using the site's `upstream_scheme` and `upstream`
-   address, preserving the original path and query string
+   address, preserving the original path and query string. **If URI
+   construction fails** (e.g., the resulting URI is malformed), the proxy must
+   return 502 Bad Gateway and log the error at `warn` level. The proxy must
+   never silently drop parts of the URI (such as the query string) — a
+   malformed upstream URI is an error, not a recoverable condition.
 2. Copy the request method, headers, and body from the original
 3. Inject proxy headers (X-Real-IP, X-Forwarded-For, X-Forwarded-Proto)
 4. Remove hop-by-hop headers (Connection, Keep-Alive, Transfer-Encoding, etc.)
@@ -173,12 +191,12 @@ specified, defaults of 5s connect and 60s request are used. Both timeouts are
 enforced using `tokio::time::timeout`, with the connect timeout nested inside
 the request timeout to ensure the overall deadline is respected.
 
-### 4. Header Handling
+### 5. Header Handling
 
 The proxy must handle request and response headers correctly to avoid security
 issues and protocol violations.
 
-**Headers removed before forwarding (hop-by-hop headers per RFC 2616 §13.5.1):**
+**Headers removed before forwarding (hop-by-hop headers per RFC 7230 §6.1):**
 
 - `Connection`
 - `Keep-Alive`
@@ -217,7 +235,7 @@ exceptions:
 - The `Server` header is removed (defense-in-depth: hiding upstream identity)
 - The proxy does not add a `Server` header to responses
 
-### 5. Error Handling
+### 6. Error Handling
 
 All error responses use plain text bodies with no proxy version or identity
 information. No upstream error details are included. Response format:
@@ -237,7 +255,7 @@ information. No upstream error details are included. Response format:
 | Unknown Host header | 404 Not Found | `Not Found` | No matching site definition |
 | Missing Host header (and no URI host) | 400 Bad Request | `Bad Request` | Required for routing; HTTP/2 clients use `:authority` |
 
-### 6. HTTP → HTTPS Redirect
+### 7. HTTP → HTTPS Redirect
 
 A separate HTTP listener on port 80 (per listener) handles redirect. It reads
 the `Host` header from the incoming request and returns a 301 Permanent Redirect
@@ -280,9 +298,13 @@ Two shared hyper Client instances handle upstream connections:
 - **HTTPS client** (`Client<HttpsConnector<HttpConnector>, Body>`): For
   `https://` upstreams, using `hyper-rustls` with system native certificates
 
-Both clients enforce the per-site connect timeout (default 5s) at the TCP level
-via `HttpConnector::set_connect_timeout()` and the overall request timeout
-(default 60s) via `tokio::time::timeout`.
+Both clients use a shared `HttpConnector` with a connect timeout ceiling
+(30 seconds) set via `HttpConnector::set_connect_timeout()`. This ceiling
+ensures TCP connections cannot hang indefinitely even if the per-site
+`tokio::time::timeout` wrapper fails. The per-site connect timeout (default
+5s) is enforced by `tokio::time::timeout`, which fires at the correct
+per-site threshold. The connector ceiling is a safety backstop, not the
+primary enforcement mechanism. See ADR-026.
 
 ## Body Size Limit
 
@@ -306,11 +328,13 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [018](decisions/018-body-size-limit.md) | Request body size limit | 100 MB default matching nginx, Gitea push compatibility |
 | [021](decisions/021-x-forwarded-for-edge-proxy.md) | X-Forwarded-For edge proxy model | Replace, don't append — proxy is the edge, no trusted upstream proxies |
 | [023](decisions/023-http2-client-facing.md) | HTTP/2 client-facing support | ALPN-based protocol detection; HTTP/2 to clients, HTTP/1.1 to upstreams |
+| [025](decisions/025-rate-limiter-ip-source.md) | Rate limiter IP source | ConnectInfo only, never client-supplied X-Forwarded-For |
+| [026](decisions/026-connector-timeout-ceiling.md) | Connector timeout ceiling | 30s ceiling on connector, per-site timeout via tokio::time::timeout |
 
 ## Open Questions
 
-Open questions are tracked in [open-questions.md](open-questions.md). All
-questions affecting this document have been resolved:
+Open questions are tracked in [open-questions.md](open-questions.md). Key
+questions affecting this document:
 
 - ~~**OQ-06**: Should upstream timeouts be configurable per-site?~~ (resolved —
   ADR-015: per-site timeout overrides with defaults)
@@ -318,5 +342,7 @@ questions affecting this document have been resolved:
   upstream collision?~~ (resolved — ADR-022: no `/health` route on the main
   listener; health checking is via port 9900 and admin socket only)
 - ~~**OQ-09**: How should `upstream_connect_timeout_secs` be enforced?~~
-  (resolved — two-phase timeout with `tokio::time::timeout`; connect timeout
-  nested inside request timeout; TCP-level `set_connect_timeout` on connector)
+  (resolved — ADR-026: 30s connector ceiling, per-site timeout via
+  `tokio::time::timeout`)
+- **OQ-13**: Should `acme_contact` support multiple email addresses? (see
+  [open-questions.md](open-questions.md))

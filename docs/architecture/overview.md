@@ -1,5 +1,5 @@
 ---
-status: reviewed
+status: draft
 last_updated: 2026-06-12
 ---
 
@@ -133,7 +133,8 @@ but all routers share `Arc<ArcSwap<DynamicConfig>>` and
 `Arc<Mutex<HashMap<IpAddr, TokenBucket>>>` via axum State. Site routing is
 global: the `Host` header is matched against a single routing table collected
 from all listeners' site definitions. Hostnames must be unique across all
-listeners — see C1 resolution in the architecture review.
+listeners. Hostnames must be unique across all listeners — see Security & Bug
+Review #003, finding C1, resolved by ADR-025.
 
 In container deployments (ADR-020), the proxy runs in a minimal container with
 `0.0.0.0` bind address and Docker port publishing. Upstream addresses use Docker
@@ -217,6 +218,9 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [022](decisions/022-health-check-scope.md) | Health check scope — local port and admin socket only | No `/health` route on main listener; health check is port 9900/admin socket only |
 | [023](decisions/023-http2-client-facing.md) | HTTP/2 client-facing support | ALPN-based protocol detection; HTTP/2 to clients, HTTP/1.1 to upstreams |
 | [024](decisions/024-ansi-disabled-logging.md) | ANSI-disabled logging | All log output uses `with_ansi(false)` for fail2ban and Docker compatibility |
+| [025](decisions/025-rate-limiter-ip-source.md) | Rate limiter IP source | ConnectInfo only, never client-supplied X-Forwarded-For |
+| [026](decisions/026-connector-timeout-ceiling.md) | Connector timeout ceiling | 30s ceiling on connector, per-site timeout via tokio::time::timeout |
+| [027](decisions/027-admin-socket-resource-limits.md) | Admin socket resource limits | 5s read timeout, 4096 byte line length limit |
 
 ## Open Questions
 
@@ -228,3 +232,5 @@ questions affecting this document have been resolved:
 - ~~**OQ-05**: Should the proxy bind to multiple addresses?~~ (resolved — single `bind_addr` per listener)
 - ~~**OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual domains?~~ (resolved — ADR-019: `[[listeners]]` with per-listener TLS config)
 - ~~**OQ-08**: Should `/health` use a less common path?~~ (resolved — ADR-022: no `/health` route on main listener; health check is port 9900/admin socket only)
+- **OQ-13**: Should `acme_contact` support multiple email addresses? (see [open-questions.md](open-questions.md))
+- **OQ-14**: Should rate limiter eviction interval and max age be configurable? (see [open-questions.md](open-questions.md))

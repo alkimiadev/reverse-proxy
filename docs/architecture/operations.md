@@ -1,5 +1,5 @@
 ---
-status: reviewed
+status: draft
 last_updated: 2026-06-12
 ---
 
@@ -31,6 +31,12 @@ proxy handler, the TLS layer, and the config system.
 The rate limiter runs as axum middleware before the proxy handler. It uses a
 token bucket algorithm per client IP, matching nginx's `limit_req burst`
 semantics.
+
+The client IP for rate limiting is determined **exclusively** from
+`ConnectInfo<SocketAddr>` — the TCP peer address set before TLS handshake.
+Client-supplied `X-Forwarded-For` headers must not be consulted because the
+rate limiter runs before the proxy handler injects trusted headers. See
+ADR-025.
 
 Rate limits are global per-IP in Phase 1 (not per-site). A request from IP
 address X counts against the same bucket regardless of which site it targets.
@@ -141,6 +147,11 @@ ADR-024.
 
 The `tracing-subscriber` layer configuration supports both simultaneously via
 `Layer` composition.
+
+Both output destinations must respect the `format` config value: when
+`format = "json"`, both file and stdout output must use JSON formatting.
+When `format = "text"`, both use text formatting. The format must not be
+silently ignored in any output path (see Security Review C4).
 
 ### File Logging and fail2ban
 
@@ -286,6 +297,11 @@ rationale.
   one newline-terminated command, receives one newline-terminated JSON
   response, then the server closes the connection.
 - **Message framing**: Newline-delimited (`\n`). Responses end with `\n`.
+- **Resource limits** (see ADR-027):
+  - Read timeout: 5 seconds. Connections that send no complete command within
+    5 seconds are closed. The timeout is logged at `debug` level.
+  - Line length limit: 4096 bytes. Connections that send more than 4096 bytes
+    without a newline are closed. The event is logged at `warn` level.
 - **Commands**:
   - `reload` — Re-read config file, validate, and swap DynamicConfig. Returns
     `{"status": "ok"}` or `{"status": "error", "message": "..."}`.
@@ -309,9 +325,17 @@ On SIGTERM or SIGINT, the proxy performs a graceful shutdown:
 2. **Close idle keep-alive connections** — Send `Connection: close` on any idle
    connections in the keep-alive pool.
 3. **Wait for in-flight requests** — Up to `shutdown_timeout_secs` (default: 30)
-   for active requests to complete. Server tasks are joined (not aborted) so
-   that in-flight requests can drain normally. Only after the timeout expires
-   are remaining tasks aborted.
+   for active requests to complete. The proxy tracks in-flight requests using
+   an atomic counter: each request **must** increment the counter when it
+   begins and decrement when it completes (via guard drop). The increment
+   must happen before the request task is spawned — if the counter is not
+   incremented, the drain logic is broken (see Security Review C2). During
+   drain, the proxy polls the counter every 100ms and exits early
+   when it reaches zero. If the timeout expires before all requests complete,
+   the proxy logs how many in-flight requests remain and proceeds to
+   force-close. Server tasks are joined (not aborted) so that in-flight
+   requests can drain normally. Only after the timeout expires are remaining
+   tasks aborted.
 4. **Force-close remaining connections** — After the timeout, any remaining
    connections are forcefully closed via TCP RST.
 5. **Cancel background tasks** — ACME renewal tasks, rate limiter eviction task,
@@ -592,11 +616,13 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [014](decisions/014-unix-socket-reload.md) | Unix domain socket config reload API | Programmatic reload with success/failure feedback |
 | [020](decisions/020-container-deployment.md) | Container deployment model | Defense-in-depth via container isolation; file-primary logging |
 | [024](decisions/024-ansi-disabled-logging.md) | ANSI-disabled logging | All log output uses `with_ansi(false)` for fail2ban and Docker compatibility |
+| [025](decisions/025-rate-limiter-ip-source.md) | Rate limiter IP source | ConnectInfo only, never client-supplied X-Forwarded-For |
+| [027](decisions/027-admin-socket-resource-limits.md) | Admin socket resource limits | 5s read timeout, 4096 byte line length limit |
 
 ## Open Questions
 
-Open questions are tracked in [open-questions.md](open-questions.md). All
-questions affecting this document have been resolved:
+Open questions are tracked in [open-questions.md](open-questions.md). Key
+questions affecting this document:
 
 - ~~**OQ-03**: Should the health check endpoint be on a separate port?~~ (resolved
   — ADR-013: separate local port, default 9900, localhost only)
@@ -606,3 +632,5 @@ questions affecting this document have been resolved:
 - ~~**OQ-12**: Should request access logging be mandatory or optional?~~ (resolved
   — access logging is mandatory and always-on at `info` level; no configuration
   option to disable it)
+- **OQ-14**: Should rate limiter eviction interval and max age be configurable?
+  (see [open-questions.md](open-questions.md))

@@ -1,5 +1,5 @@
 ---
-status: reviewed
+status: draft
 last_updated: 2026-06-12
 ---
 
@@ -25,11 +25,11 @@ connections remain HTTP/1.1.
 
 | Document | Status | Description |
 |----------|--------|-------------|
-| [overview.md](overview.md) | Reviewed | Vision, scope, crate dependencies, exports |
-| [proxy.md](proxy.md) | Reviewed | Reverse proxy handler, request flow, header injection |
+| [overview.md](overview.md) | Draft | Vision, scope, crate dependencies, exports |
+| [proxy.md](proxy.md) | Draft | Reverse proxy handler, request flow, header injection |
 | [tls.md](tls.md) | Reviewed | TLS termination, ACME, manual certs, SNI, ALPN |
-| [config.md](config.md) | Reviewed | TOML config format, static/dynamic split, ArcSwap reload |
-| [operations.md](operations.md) | Reviewed | Rate limiting, logging, health check, systemd, shutdown |
+| [config.md](config.md) | Draft | TOML config format, static/dynamic split, ArcSwap reload |
+| [operations.md](operations.md) | Draft | Rate limiting, logging, health check, systemd, shutdown |
 
 ## ADR Table
 
@@ -59,6 +59,9 @@ connections remain HTTP/1.1.
 | [022](decisions/022-health-check-scope.md) | Health Check Scope — Local Port and Admin Socket Only | Accepted |
 | [023](decisions/023-http2-client-facing.md) | HTTP/2 Client-Facing Support | Accepted |
 | [024](decisions/024-ansi-disabled-logging.md) | ANSI-Disabled Logging for Container Deployments | Accepted |
+| [025](decisions/025-rate-limiter-ip-source.md) | Rate Limiter IP Source — ConnectInfo Only | Accepted |
+| [026](decisions/026-connector-timeout-ceiling.md) | Connector Timeout Ceiling for Per-Site Timeouts | Accepted |
+| [027](decisions/027-admin-socket-resource-limits.md) | Admin Socket Resource Limits | Accepted |
 
 ## Open Questions
 
@@ -74,10 +77,12 @@ See [open-questions.md](open-questions.md) for the full tracker.
 | ~~OQ-06~~ | ~~Should upstream timeouts be configurable per-site?~~ | ~~low~~ | **resolved** (ADR-015) |
 | ~~OQ-07~~ | ~~Should per-site TLS overrides be supported for mixed ACME/manual domains?~~ | ~~low~~ | **resolved** (ADR-019) |
 | ~~OQ-08~~ | ~~Should `/health` use a less common path to avoid upstream collision?~~ | ~~medium~~ | **resolved** (ADR-022: no `/health` route on main listener) |
-| ~~OQ-09~~ | ~~How should `upstream_connect_timeout_secs` be enforced?~~ | ~~medium~~ | **resolved** (implementation gap — ADR-015 already decides this) |
+| ~~OQ-09~~ | ~~How should `upstream_connect_timeout_secs` be enforced?~~ | ~~medium~~ | **resolved** (ADR-026: 30s connector ceiling) |
 | ~~OQ-10~~ | ~~Should ACME contact email be a required config field?~~ | ~~high~~ | **resolved** (already specified in config.md; implementation bug C2) |
 | ~~OQ-11~~ | ~~How should `X-Forwarded-Proto` be derived per-listener?~~ | ~~medium~~ | **resolved** (hardcoded `https` is correct for TLS-terminating proxy) |
 | ~~OQ-12~~ | ~~Should request access logging be mandatory or optional?~~ | ~~high~~ | **resolved** (mandatory, always-on per operations.md) |
+| OQ-13 | Should `acme_contact` support multiple email addresses? | low | open |
+| OQ-14 | Should rate limiter eviction interval and max age be configurable? | low | open |
 
 ## Document Lifecycle
 

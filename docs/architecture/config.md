@@ -1,5 +1,5 @@
 ---
-status: reviewed
+status: draft
 last_updated: 2026-06-12
 ---
 
@@ -75,9 +75,9 @@ config.toml
 
 ## Static vs Dynamic Configuration
 
-This split follows the pattern established in alknet (ADR-030) and adapted
-for our simpler use case. See ADR-019 for the rationale behind the
-`[[listeners]]` configuration format.
+This split follows the pattern established in alknet (alknet ADR-030, not
+this project) and adapted for our simpler use case. See ADR-019 for the
+rationale behind the `[[listeners]]` configuration format.
 
 ### StaticConfig
 
@@ -114,15 +114,22 @@ will be handled via signal-based or built-in rotation.
 | Field | Type | Description |
 |-------|------|-------------|
 | `bind_addr` | `String` | IP address to bind to (must be explicit, no `0.0.0.0`; see ADR-016) |
-| `http_port` | `u32` | Port for HTTP→HTTPS redirect (default: `80`; set to `0` to disable; valid values: 0 or 1–65535) |
+| `http_port` | `u16` | Port for HTTP→HTTPS redirect (default: `80`; set to `0` to disable; valid values: 0 or 1–65535). Note: the implementation currently uses `u32`; this must be changed to `u16` to match the architecture spec (see Security Review W12). |
 | `https_port` | `u16` | Port for TLS listener (default: `443`) |
 | `tls.mode` | `"acme"` or `"manual"` | Certificate provisioning mode |
 | `tls.acme_domains` | `Vec<String>` | Domains for ACME SAN certificate (ACME mode only) |
 | `tls.acme_cache_dir` | `String` | ACME state cache directory |
 | `tls.acme_directory` | `"production"` or `"staging"` | Let's Encrypt directory |
-| `tls.acme_contact` | `String` | Contact email for ACME registration (e.g., `"mailto:admin@example.com"`). Required for production; Let's Encrypt rejects registrations without a contact email. See OQ-10. |
+| `tls.acme_contact` | `String` | Contact email for ACME registration (e.g., `"mailto:admin@example.com"`). Required for production; Let's Encrypt rejects registrations without a contact email. Must contain a non-empty email after `mailto:` with an `@` sign. See OQ-10, OQ-13. |
 | `tls.cert_path` | `String` | Certificate file path (manual mode only) |
 | `tls.key_path` | `String` | Private key file path (manual mode only) |
+
+**Note on `X-Forwarded-Proto`**: The `X-Forwarded-Proto` header is derived
+from which listener port received the request: `https` for requests on the
+listener's `https_port`, `http` for requests on the `http_port`. In practice,
+since the HTTP listener sends a 301 redirect rather than proxying,
+`X-Forwarded-Proto` is always `"https"` for proxied requests. See proxy.md and
+OQ-11.
 
 **Why listeners are static:** Each listener requires binding a TCP socket and
 constructing a TLS acceptor — operations that fundamentally require a restart.
@@ -401,14 +408,23 @@ On startup, the config is validated:
 16. Site `host` values must be valid hostnames (not IP addresses, not
     including ports). Hostnames are normalized to lowercase during validation.
 17. `upstream` must be in `host:port` format where `port` is a required integer
-    1–65535. Examples: `gitea:3000`, `127.0.0.1:3000`, `[::1]:3000`. Invalid
-    examples: `gitea` (missing port), `http://gitea:3000` (includes scheme),
-    `10.0.0.5` (missing port). The `upstream_scheme` field handles the protocol.
+    1–65535 and the host part must be a valid DNS hostname or IP address.
+    IPv6 addresses must use bracket notation (e.g., `[::1]:3000`). Values
+    like `!!!bad!!!:3000` or `@#$%:8080` are rejected. The host part is
+    validated as follows: bracket-enclosed values are parsed as IPv6
+    addresses; otherwise the host part must parse as a valid `IpAddr` or
+    pass `is_valid_hostname` validation (same rules as site `host` values).
+    Examples: `gitea:3000`, `127.0.0.1:3000`, `[::1]:3000`. Invalid examples:
+    `gitea` (missing port), `http://gitea:3000` (includes scheme), `10.0.0.5`
+    (missing port), `!!!bad!!!:3000` (invalid host part). The
+    `upstream_scheme` field handles the protocol.
 18. `upstream_scheme` values are case-sensitive: only `"http"` or `"https"`
     (lowercase). Default is `"http"`.
-19. In ACME mode, `tls.acme_contact` must be a valid `mailto:` URI
-    (e.g., `"mailto:admin@example.com"`). Let's Encrypt requires a contact
-    email for production certificate requests.
+19. In ACME mode, `tls.acme_contact` must be a valid `mailto:` URI with a
+    non-empty email address containing an `@` sign
+    (e.g., `"mailto:admin@example.com"`). Values like `"mailto:"` (empty
+    email) or `"mailto:user"` (no `@`) are rejected. Let's Encrypt requires
+    a contact email for production certificate requests.
 
 On SIGHUP reload, the same validation applies. If the new config fails
 validation, the reload is rejected and the old config remains active. An error
@@ -434,6 +450,8 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [016](decisions/016-explicit-bind-address.md) | Explicit bind address required | Rejects `0.0.0.0` to prevent accidental exposure |
 | [019](decisions/019-multi-config-listeners.md) | Multi-config listeners | `[[listeners]]` supporting both dedicated-IP and shared-IP deployment models |
 | [020](decisions/020-container-deployment.md) | Container deployment model | Flexible upstream addressing; `allow_wildcard_bind` override for containers |
+| [026](decisions/026-connector-timeout-ceiling.md) | Connector timeout ceiling | 30s ceiling on connector, per-site timeout via tokio::time::timeout |
+| [027](decisions/027-admin-socket-resource-limits.md) | Admin socket resource limits | 5s read timeout, 4096 byte line length limit |
 
 ## Open Questions
 
@@ -444,3 +462,7 @@ questions affecting this document:
   to SIGHUP?~~ (resolved — ADR-014: Unix domain socket admin API added)
 - ~~**OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual
   domains?~~ (resolved — ADR-019: `[[listeners]]` with per-listener TLS config)
+- **OQ-13**: Should `acme_contact` support multiple email addresses? (see
+  [open-questions.md](open-questions.md))
+- **OQ-14**: Should rate limiter eviction interval and max age be configurable?
+  (see [open-questions.md](open-questions.md))

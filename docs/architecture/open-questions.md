@@ -1,5 +1,5 @@
 ---
-status: reviewed
+status: draft
 last_updated: 2026-06-12
 ---
 
@@ -111,18 +111,21 @@ last_updated: 2026-06-12
 
 ### ~~OQ-09: How should `upstream_connect_timeout_secs` be enforced?~~
 
-- **Origin**: Implementation review finding W4, ADR-015, ADR-017
+- **Origin**: Implementation review finding W4, ADR-015, ADR-017, Security
+  Review C3
 - **Status**: resolved
 - **Priority**: medium
 - **Resolution**: Implemented using a two-phase `tokio::time::timeout` approach.
   The inner timeout uses the per-site `upstream_connect_timeout_secs` (default
   5s) for the connect + first-byte phase, and the outer timeout uses
   `upstream_request_timeout_secs` (default 60s) for the full request/response
-  cycle. Additionally, `HttpConnector::set_connect_timeout()` enforces the
-  TCP-level connect timeout on both HTTP and HTTPS clients. The implementation
-  is in `handler.rs` and `create_http_client()`/`create_https_client()`.
-  No new ADR needed; the decision was already made in ADR-015.
-- **Cross-references**: ADR-015, ADR-017
+  cycle. The shared `HttpConnector` uses a 30-second connect timeout ceiling
+  via `set_connect_timeout()` — this is a safety backstop, not the primary
+  enforcement mechanism. The per-site `tokio::time::timeout` enforces the
+  actual connect timeout. This ensures per-site values >5s work correctly
+  (previously the hardcoded 5s connector timeout silently capped them). See
+  ADR-026.
+- **Cross-references**: ADR-015, ADR-017, ADR-026
 
 ### ~~OQ-10: Should ACME contact email be a required config field?~~
 
@@ -169,3 +172,32 @@ last_updated: 2026-06-12
   but is not called — this is an implementation gap (W13), not an
   architectural question. No ADR needed; ADR-007 already covers the log format.
 - **Cross-references**: ADR-007
+
+## Configuration
+
+### OQ-13: Should `acme_contact` support multiple email addresses?
+
+- **Origin**: Security Review S9, [config.md](config.md), [tls.md](tls.md)
+- **Status**: open
+- **Priority**: low
+- **Details**: `acme_contact` is currently a single `String`, but ACME supports
+  multiple contact emails. The `AcmeTlsConfig.contact` field in the
+  implementation is already `Vec<String>`, and the single config value is
+  wrapped in `vec![...]`. Changing `acme_contact` to `Vec<String>` in the
+  config schema would provide consistency with the ACME protocol. However,
+  this is a config format change that requires migration documentation and
+  backward compatibility considerations. For Phase 1, a single email is
+  sufficient.
+- **Cross-references**: ADR-004
+
+### OQ-14: Should rate limiter eviction interval and max age be configurable?
+
+- **Origin**: Security Review S2, [operations.md](operations.md)
+- **Status**: open
+- **Priority**: low
+- **Details**: The eviction task interval (60s) and max age (300s) are
+  currently hardcoded. In high-traffic deployments, a shorter interval or
+  longer max age might be desirable. These would be dynamic config fields
+  (hot-reloadable via ArcSwap) if added. For Phase 1, the hardcoded values
+  are reasonable defaults.
+- **Cross-references**: ADR-006
