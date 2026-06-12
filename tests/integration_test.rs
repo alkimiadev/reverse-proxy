@@ -257,7 +257,7 @@ async fn test_rate_limit_eviction_task() {
 
 fn make_redirect_listener_config(
     bind_addr: &str,
-    http_port: u32,
+    http_port: u16,
     https_port: u16,
 ) -> reverse_proxy::config::static_config::ListenerConfig {
     reverse_proxy::config::static_config::ListenerConfig {

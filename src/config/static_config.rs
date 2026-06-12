@@ -31,7 +31,7 @@ pub fn default_shutdown_timeout_secs() -> u64 {
 pub struct ListenerConfig {
     pub bind_addr: String,
     #[serde(default = "default_http_port")]
-    pub http_port: u32,
+    pub http_port: u16,
     #[serde(default = "default_https_port")]
     pub https_port: u16,
     pub tls: TlsConfig,
@@ -39,7 +39,7 @@ pub struct ListenerConfig {
     pub sites: Vec<crate::config::dynamic_config::SiteConfig>,
 }
 
-fn default_http_port() -> u32 {
+fn default_http_port() -> u16 {
     80
 }
 

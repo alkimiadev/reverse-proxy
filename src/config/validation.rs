@@ -42,19 +42,19 @@ pub enum ValidationError {
     #[error("body.limit_bytes must be > 0, got {value}")]
     BodyLimitBytesZero { value: u64 },
     #[error("duplicate bind_addr:http_port combination: {bind_addr}:{http_port}")]
-    DuplicateHttpBind { bind_addr: String, http_port: u32 },
+    DuplicateHttpBind { bind_addr: String, http_port: u16 },
     #[error(
         "listener {bind_addr}: http_port ({http_port}) and https_port ({https_port}) must differ"
     )]
     HttpsAndHttpPortSame {
         bind_addr: String,
-        http_port: u32,
+        http_port: u16,
         https_port: u16,
     },
     #[error("listener {bind_addr}: https_port must be 1-65535, got {https_port}")]
     HttpsPortInvalid { bind_addr: String, https_port: u16 },
     #[error("listener {bind_addr}: http_port must be 0 (disabled) or 1-65535, got {http_port}")]
-    HttpPortInvalid { bind_addr: String, http_port: u32 },
+    HttpPortInvalid { bind_addr: String, http_port: u16 },
     #[error("health_check_port {health_check_port} conflicts with listener {bind_addr}:{port}")]
     HealthCheckPortConflict {
         health_check_port: u16,
@@ -123,14 +123,7 @@ pub fn validate(
             });
         }
 
-        if listener.http_port > 65535 {
-            errors.push(ValidationError::HttpPortInvalid {
-                bind_addr: listener.bind_addr.clone(),
-                http_port: listener.http_port,
-            });
-        }
-
-        if listener.http_port > 0 && listener.http_port == listener.https_port as u32 {
+        if listener.http_port > 0 && listener.http_port == listener.https_port {
             errors.push(ValidationError::HttpsAndHttpPortSame {
                 bind_addr: listener.bind_addr.clone(),
                 http_port: listener.http_port,
@@ -195,14 +188,11 @@ pub fn validate(
                     port: listener.https_port,
                 });
             }
-            if listener.http_port > 0
-                && listener.http_port <= 65535
-                && static_config.health_check_port as u32 == listener.http_port
-            {
+            if listener.http_port > 0 && static_config.health_check_port == listener.http_port {
                 errors.push(ValidationError::HealthCheckPortConflict {
                     health_check_port: static_config.health_check_port,
                     bind_addr: listener.bind_addr.clone(),
-                    port: listener.http_port as u16,
+                    port: listener.http_port,
                 });
             }
         }
@@ -736,20 +726,6 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| matches!(e, ValidationError::HttpsPortInvalid { .. })));
-    }
-
-    #[test]
-    fn rule13_http_port_invalid() {
-        let mut config = valid_static_config();
-        config.listeners[0].http_port = 65536;
-        config.listeners[0].tls = make_acme_tls();
-        let dynamic = valid_dynamic_config();
-        let result = validate(&config, &dynamic, false);
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::HttpPortInvalid { .. })));
     }
 
     #[test]
