@@ -1,7 +1,7 @@
 ---
 id: fix/token-bucket-nanosecond
 name: Fix token bucket refill to use nanosecond precision
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial
