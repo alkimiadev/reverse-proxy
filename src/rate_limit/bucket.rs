@@ -2,11 +2,11 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::time::Instant;
 
 pub struct TokenBucket {
-    pub tokens: f64,
-    pub last_refill: Instant,
-    pub rate: f64,
-    pub max: u32,
-    pub last_access: Instant,
+    tokens: f64,
+    last_refill: Instant,
+    rate: f64,
+    max: u32,
+    pub(crate) last_access: Instant,
 }
 
 impl TokenBucket {
