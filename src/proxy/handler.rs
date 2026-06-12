@@ -62,7 +62,23 @@ async fn proxy_handler(
     let upstream_scheme = site.upstream_scheme.clone();
     let upstream = site.upstream.clone();
     let upstream_addr = format!("{}://{}", upstream_scheme, upstream);
-    let upstream_uri = build_upstream_uri(&upstream_scheme, &upstream, req.uri());
+    let upstream_uri = match build_upstream_uri(&upstream_scheme, &upstream, req.uri()) {
+        Ok(uri) => uri,
+        Err(()) => {
+            log_upstream_error!(&host_owned, &upstream_addr, "malformed upstream URI");
+            let duration_ms = start.elapsed().as_millis() as u64;
+            log_request!(
+                &client_ip,
+                &host_owned,
+                &method,
+                &path,
+                502u16,
+                &upstream,
+                duration_ms
+            );
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
 
     let upstream_req = match build_upstream_request(req, &upstream_uri) {
         Ok(r) => r,
@@ -187,17 +203,15 @@ async fn proxy_handler(
     }
 }
 
-fn build_upstream_uri(scheme: &str, upstream: &str, original_uri: &Uri) -> Uri {
+fn build_upstream_uri(scheme: &str, upstream: &str, original_uri: &Uri) -> Result<Uri, ()> {
     let path = original_uri.path();
     let query = original_uri
         .query()
         .map(|q| format!("?{}", q))
         .unwrap_or_default();
     let uri_string = format!("{}://{}{}{}", scheme, upstream, path, query);
-    uri_string.parse::<Uri>().unwrap_or_else(|_| {
-        format!("{}://{}{}", scheme, upstream, path)
-            .parse::<Uri>()
-            .unwrap()
+    uri_string.parse::<Uri>().map_err(|e| {
+        warn!(error = %e, uri = %uri_string, "failed to parse upstream URI");
     })
 }
 
@@ -346,21 +360,21 @@ mod tests {
     #[test]
     fn test_build_upstream_uri_with_query() {
         let uri: Uri = "/path?foo=bar".parse().unwrap();
-        let result = build_upstream_uri("http", "127.0.0.1:8080", &uri);
+        let result = build_upstream_uri("http", "127.0.0.1:8080", &uri).unwrap();
         assert_eq!(result.to_string(), "http://127.0.0.1:8080/path?foo=bar");
     }
 
     #[test]
     fn test_build_upstream_uri_without_query() {
         let uri: Uri = "/path".parse().unwrap();
-        let result = build_upstream_uri("http", "127.0.0.1:8080", &uri);
+        let result = build_upstream_uri("http", "127.0.0.1:8080", &uri).unwrap();
         assert_eq!(result.to_string(), "http://127.0.0.1:8080/path");
     }
 
     #[test]
     fn test_build_upstream_uri_https() {
         let uri: Uri = "/secure".parse().unwrap();
-        let result = build_upstream_uri("https", "upstream.example.com", &uri);
+        let result = build_upstream_uri("https", "upstream.example.com", &uri).unwrap();
         assert_eq!(result.to_string(), "https://upstream.example.com/secure");
     }
 }
