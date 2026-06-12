@@ -8,6 +8,7 @@ use tracing::info;
 use super::acme::{spawn_acme_state, AcmeTlsConfig};
 use super::config::crypto_provider;
 use crate::config::static_config::TlsConfig;
+use crate::shutdown::GracefulShutdown;
 
 const ACME_TLS_ALPN_01: &[u8] = b"acme-tls/1";
 
@@ -41,7 +42,7 @@ pub enum TlsMode {
 }
 
 #[allow(dead_code)]
-pub fn setup_tls(tls_config: &TlsConfig) -> Result<TlsMode> {
+pub fn setup_tls(tls_config: &TlsConfig, shutdown: Arc<GracefulShutdown>) -> Result<TlsMode> {
     match tls_config.mode.as_str() {
         "manual" => {
             if tls_config.cert_path.is_empty() {
@@ -75,7 +76,7 @@ pub fn setup_tls(tls_config: &TlsConfig) -> Result<TlsMode> {
 
             let default_config = build_acme_server_config(resolver.clone())?;
 
-            spawn_acme_state(state, tls_config.acme_domains.clone());
+            spawn_acme_state(state, tls_config.acme_domains.clone(), shutdown);
 
             info!(
                 domains = ?tls_config.acme_domains,
@@ -136,7 +137,8 @@ mod tests {
             cert_path: String::new(),
             key_path: "/some/key.pem".to_string(),
         };
-        let result = setup_tls(&tls_config);
+        let shutdown = Arc::new(GracefulShutdown::new(30));
+        let result = setup_tls(&tls_config, shutdown);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("cert_path"));
@@ -153,7 +155,8 @@ mod tests {
             cert_path: "/some/cert.pem".to_string(),
             key_path: String::new(),
         };
-        let result = setup_tls(&tls_config);
+        let shutdown = Arc::new(GracefulShutdown::new(30));
+        let result = setup_tls(&tls_config, shutdown);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("key_path"));
@@ -170,7 +173,8 @@ mod tests {
             cert_path: String::new(),
             key_path: String::new(),
         };
-        let result = setup_tls(&tls_config);
+        let shutdown = Arc::new(GracefulShutdown::new(30));
+        let result = setup_tls(&tls_config, shutdown);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("acme_domains"));
@@ -187,7 +191,8 @@ mod tests {
             cert_path: String::new(),
             key_path: String::new(),
         };
-        let result = setup_tls(&tls_config);
+        let shutdown = Arc::new(GracefulShutdown::new(30));
+        let result = setup_tls(&tls_config, shutdown);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("acme_cache_dir"));
@@ -204,7 +209,8 @@ mod tests {
             cert_path: String::new(),
             key_path: String::new(),
         };
-        let result = setup_tls(&tls_config);
+        let shutdown = Arc::new(GracefulShutdown::new(30));
+        let result = setup_tls(&tls_config, shutdown);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("unknown TLS mode"));

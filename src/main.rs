@@ -65,6 +65,10 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
     let dynamic_config: DynamicConfig = loaded_config.dynamic_config;
     let config_arc = Arc::new(ArcSwap::from_pointee(dynamic_config));
 
+    let shutdown = Arc::new(GracefulShutdown::new(
+        loaded_config.static_config.shutdown_timeout_secs,
+    ));
+
     let rate_limiter = Arc::new(RateLimiter::new(config_arc.clone()));
 
     let http_client = create_http_client();
@@ -81,6 +85,12 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
         loaded_config.static_config.clone(),
     ));
 
+    reverse_proxy::shutdown::register_signal_handlers(
+        shutdown.clone(),
+        reload_handle.clone(),
+        config_path.to_string(),
+    )?;
+
     if loaded_config.static_config.health_check_port > 0 {
         let (health_addr, _health_handle) =
             health::start_health_check_listener(loaded_config.static_config.health_check_port)
@@ -96,8 +106,9 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
             config_path.to_string(),
         ));
         let admin_socket_clone = admin_socket.clone();
+        let shutdown_for_admin = shutdown.clone();
         tokio::spawn(async move {
-            if let Err(e) = start_admin_socket(admin_socket_clone).await {
+            if let Err(e) = start_admin_socket(admin_socket_clone, shutdown_for_admin).await {
                 match e {
                     AdminSocketError::Disabled => {}
                     AdminSocketError::SocketInUse(path) => {
@@ -150,7 +161,7 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
 
     let mut tls_acceptors = Vec::new();
     for (listener_config, _) in &bound_listeners {
-        let tls_mode = setup_tls(&listener_config.tls).context(format!(
+        let tls_mode = setup_tls(&listener_config.tls, shutdown.clone()).context(format!(
             "failed to setup TLS for listener {}",
             listener_config.bind_addr
         ))?;
@@ -175,20 +186,11 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
         }
     }
 
-    let shutdown = Arc::new(GracefulShutdown::new(
-        loaded_config.static_config.shutdown_timeout_secs,
-    ));
-
-    reverse_proxy::shutdown::register_signal_handlers(
-        shutdown.clone(),
-        reload_handle.clone(),
-        config_path.to_string(),
-    )?;
-
     let _eviction_handle = start_eviction_task(
         rate_limiter.clone(),
         std::time::Duration::from_secs(60),
         std::time::Duration::from_secs(300),
+        shutdown.subscribe(),
     );
 
     let app = build_router(proxy_state.clone(), config_arc.clone(), rate_limiter);
@@ -230,8 +232,12 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
 
     info!("shutdown signal received, starting graceful shutdown");
 
+    let shutdown_timeout = shutdown.shutdown_timeout();
     for handle in https_server_handles {
-        handle.abort();
+        let result = tokio::time::timeout(shutdown_timeout, handle).await;
+        if result.is_err() {
+            warn!("shutdown timeout expired, aborting listener task");
+        }
     }
 
     let remaining = drain_in_flight(&in_flight, shutdown.shutdown_timeout()).await;

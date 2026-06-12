@@ -6,6 +6,8 @@ use rustls_acme::caches::DirCache;
 use rustls_acme::{AcmeConfig, AcmeState, EventError, EventOk, ResolvesServerCertAcme};
 use tracing::{error, info, warn};
 
+use crate::shutdown::GracefulShutdown;
+
 #[allow(dead_code)]
 const LETS_ENCRYPT_PRODUCTION_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
 #[allow(dead_code)]
@@ -66,93 +68,106 @@ impl AcmeTlsConfig {
 pub fn spawn_acme_state(
     state: AcmeState<std::io::Error, std::io::Error>,
     domains: Vec<String>,
+    shutdown: Arc<GracefulShutdown>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use futures::StreamExt;
         let mut state = state;
+        let mut shutdown_rx = shutdown.subscribe();
         loop {
-            match state.next().await {
-                Some(Ok(event)) => match event {
-                    EventOk::DeployedCachedCert => {
-                        info!(
-                            domains = ?domains,
-                            "ACME: deployed cached certificate"
-                        );
+            tokio::select! {
+                event = state.next() => {
+                    match event {
+                        Some(Ok(event)) => match event {
+                            EventOk::DeployedCachedCert => {
+                                info!(
+                                    domains = ?domains,
+                                    "ACME: deployed cached certificate"
+                                );
+                            }
+                            EventOk::DeployedNewCert => {
+                                info!(
+                                    domains = ?domains,
+                                    "ACME: deployed new certificate"
+                                );
+                            }
+                            EventOk::CertCacheStore => {
+                                info!(
+                                    domains = ?domains,
+                                    "ACME: certificate stored to cache"
+                                );
+                            }
+                            EventOk::AccountCacheStore => {
+                                info!(
+                                    domains = ?domains,
+                                    "ACME: account stored to cache"
+                                );
+                            }
+                        },
+                        Some(Err(err)) => match &err {
+                            EventError::CertCacheLoad(e) => {
+                                error!(
+                                    domains = ?domains,
+                                    error = ?e,
+                                    "ACME: certificate cache load failed"
+                                );
+                            }
+                            EventError::AccountCacheLoad(e) => {
+                                error!(
+                                    domains = ?domains,
+                                    error = ?e,
+                                    "ACME: account cache load failed"
+                                );
+                            }
+                            EventError::CertCacheStore(e) => {
+                                warn!(
+                                    domains = ?domains,
+                                    error = ?e,
+                                    "ACME: certificate cache store failed"
+                                );
+                            }
+                            EventError::AccountCacheStore(e) => {
+                                warn!(
+                                    domains = ?domains,
+                                    error = ?e,
+                                    "ACME: account cache store failed"
+                                );
+                            }
+                            EventError::CachedCertParse(e) => {
+                                error!(
+                                    domains = ?domains,
+                                    error = ?e,
+                                    "ACME: cached certificate parse failed"
+                                );
+                            }
+                            EventError::Order(e) => {
+                                warn!(
+                                    domains = ?domains,
+                                    error = ?e,
+                                    "ACME: certificate order failed, will retry"
+                                );
+                            }
+                            EventError::NewCertParse(e) => {
+                                error!(
+                                    domains = ?domains,
+                                    error = ?e,
+                                    "ACME: new certificate parse failed"
+                                );
+                            }
+                        },
+                        None => {
+                            info!(
+                                domains = ?domains,
+                                "ACME: state machine ended"
+                            );
+                            break;
+                        }
                     }
-                    EventOk::DeployedNewCert => {
-                        info!(
-                            domains = ?domains,
-                            "ACME: deployed new certificate"
-                        );
-                    }
-                    EventOk::CertCacheStore => {
-                        info!(
-                            domains = ?domains,
-                            "ACME: certificate stored to cache"
-                        );
-                    }
-                    EventOk::AccountCacheStore => {
-                        info!(
-                            domains = ?domains,
-                            "ACME: account stored to cache"
-                        );
-                    }
-                },
-                Some(Err(err)) => match &err {
-                    EventError::CertCacheLoad(e) => {
-                        error!(
-                            domains = ?domains,
-                            error = ?e,
-                            "ACME: certificate cache load failed"
-                        );
-                    }
-                    EventError::AccountCacheLoad(e) => {
-                        error!(
-                            domains = ?domains,
-                            error = ?e,
-                            "ACME: account cache load failed"
-                        );
-                    }
-                    EventError::CertCacheStore(e) => {
-                        warn!(
-                            domains = ?domains,
-                            error = ?e,
-                            "ACME: certificate cache store failed"
-                        );
-                    }
-                    EventError::AccountCacheStore(e) => {
-                        warn!(
-                            domains = ?domains,
-                            error = ?e,
-                            "ACME: account cache store failed"
-                        );
-                    }
-                    EventError::CachedCertParse(e) => {
-                        error!(
-                            domains = ?domains,
-                            error = ?e,
-                            "ACME: cached certificate parse failed"
-                        );
-                    }
-                    EventError::Order(e) => {
-                        warn!(
-                            domains = ?domains,
-                            error = ?e,
-                            "ACME: certificate order failed, will retry"
-                        );
-                    }
-                    EventError::NewCertParse(e) => {
-                        error!(
-                            domains = ?domains,
-                            error = ?e,
-                            "ACME: new certificate parse failed"
-                        );
-                    }
-                },
-                None => {
+                }
+                _ = shutdown_rx.changed() => {
                     info!(
                         domains = ?domains,
-                        "ACME: state machine ended"
+                        "ACME: state machine shutting down"
                     );
                     break;
                 }
