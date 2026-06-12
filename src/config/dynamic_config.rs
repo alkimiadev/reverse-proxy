@@ -104,7 +104,7 @@ pub struct BodyConfig {
 
 pub struct ConfigReloadHandle {
     config: Arc<ArcSwap<DynamicConfig>>,
-    static_config: StaticConfig,
+    static_config: ArcSwap<StaticConfig>,
     reload_mutex: Mutex<()>,
 }
 
@@ -112,13 +112,17 @@ impl ConfigReloadHandle {
     pub fn new(config: Arc<ArcSwap<DynamicConfig>>, static_config: StaticConfig) -> Self {
         Self {
             config,
-            static_config,
+            static_config: ArcSwap::from_pointee(static_config),
             reload_mutex: Mutex::new(()),
         }
     }
 
     pub fn load(&self) -> Arc<DynamicConfig> {
         self.config.load_full()
+    }
+
+    pub fn static_config(&self) -> Arc<StaticConfig> {
+        self.static_config.load_full()
     }
 
     pub async fn reload(
@@ -139,9 +143,10 @@ impl ConfigReloadHandle {
             )
         })?;
 
-        let changed_fields = diff_static_config(&self.static_config, &new_static);
+        let changed_fields = diff_static_config(&self.static_config.load(), &new_static);
 
         self.config.store(Arc::new(new_dynamic));
+        self.static_config.store(Arc::new(new_static));
 
         Ok(changed_fields)
     }
@@ -281,6 +286,58 @@ mod tests {
         assert!(changes.contains(&"health_check_port".to_string()));
         assert!(changes.contains(&"logging".to_string()));
         assert_eq!(changes.len(), 2);
+    }
+
+    #[test]
+    fn reload_second_time_no_further_static_changes() {
+        let initial = test_fixtures::test_dynamic_config();
+        let config_arc = Arc::new(ArcSwap::from_pointee(initial.clone()));
+        let original_static = test_fixtures::test_static_config();
+        let handle = ConfigReloadHandle::new(config_arc.clone(), original_static.clone());
+
+        let mut changed_static = original_static.clone();
+        changed_static.health_check_port = 8080;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let changes1 = rt
+            .block_on(handle.reload(changed_static.clone(), initial.clone()))
+            .unwrap();
+        assert!(changes1.contains(&"health_check_port".to_string()));
+
+        let changes2 = rt
+            .block_on(handle.reload(changed_static.clone(), initial.clone()))
+            .unwrap();
+        assert!(changes2.is_empty());
+    }
+
+    #[test]
+    fn reload_second_time_different_static_changes() {
+        let initial = test_fixtures::test_dynamic_config();
+        let config_arc = Arc::new(ArcSwap::from_pointee(initial.clone()));
+        let original_static = test_fixtures::test_static_config();
+        let handle = ConfigReloadHandle::new(config_arc.clone(), original_static.clone());
+
+        let mut changed_static = original_static.clone();
+        changed_static.health_check_port = 8080;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let changes1 = rt
+            .block_on(handle.reload(changed_static.clone(), initial.clone()))
+            .unwrap();
+        assert!(changes1.contains(&"health_check_port".to_string()));
+        assert_eq!(changes1.len(), 1);
+
+        let mut further_changed = changed_static.clone();
+        further_changed.shutdown_timeout_secs = 60;
+
+        let changes2 = rt
+            .block_on(handle.reload(further_changed.clone(), initial.clone()))
+            .unwrap();
+        assert!(!changes2.contains(&"health_check_port".to_string()));
+        assert!(changes2.contains(&"shutdown_timeout_secs".to_string()));
+        assert_eq!(changes2.len(), 1);
     }
 
     #[test]
