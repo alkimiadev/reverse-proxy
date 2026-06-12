@@ -7,7 +7,6 @@ use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
 use axum::Router;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
@@ -22,11 +21,6 @@ pub struct ProxyState {
     pub config: Arc<ArcSwap<DynamicConfig>>,
     pub http_client: Client<HttpConnector, Body>,
     pub https_client: Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>,
-    pub is_https: bool,
-}
-
-async fn health_handler() -> impl IntoResponse {
-    StatusCode::OK
 }
 
 async fn proxy_handler(
@@ -34,10 +28,6 @@ async fn proxy_handler(
     State(state): State<Arc<ProxyState>>,
     mut req: Request<Body>,
 ) -> Response {
-    if req.uri().path() == "/health" {
-        return StatusCode::OK.into_response();
-    }
-
     let host = req
         .headers()
         .get(axum::http::header::HOST)
@@ -55,7 +45,7 @@ async fn proxy_handler(
     };
 
     let host_owned = host.to_string();
-    inject_proxy_headers(req.headers_mut(), remote_addr, state.is_https);
+    inject_proxy_headers(req.headers_mut(), remote_addr);
     remove_hop_by_hop(req.headers_mut());
 
     let upstream_scheme = site.upstream_scheme.clone();
@@ -165,10 +155,7 @@ fn root_certs() -> rustls::RootCertStore {
 }
 
 pub fn proxy_router(state: Arc<ProxyState>) -> Router {
-    Router::new()
-        .route("/health", get(health_handler))
-        .fallback(proxy_handler)
-        .with_state(state)
+    Router::new().fallback(proxy_handler).with_state(state)
 }
 
 #[cfg(test)]
@@ -195,7 +182,6 @@ mod tests {
             ))),
             http_client: create_http_client(),
             https_client: create_https_client(),
-            is_https: true,
         })
     }
 
@@ -212,46 +198,6 @@ mod tests {
         let mut req = builder.body(Body::empty()).unwrap();
         req.extensions_mut().insert(ConnectInfo(remote_addr));
         req
-    }
-
-    #[tokio::test]
-    async fn health_path_returns_200_regardless_of_host() {
-        let state = make_proxy_state(vec![SiteConfig {
-            host: "example.com".to_string(),
-            upstream: "127.0.0.1:8080".to_string(),
-            upstream_scheme: "http".to_string(),
-            upstream_connect_timeout_secs: 5,
-            upstream_request_timeout_secs: 60,
-        }]);
-        let router = proxy_router(state);
-        let req = make_request_with_connect_info(
-            "GET",
-            "/health",
-            None,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-        );
-        let resp = router.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn health_with_unknown_host_returns_200() {
-        let state = make_proxy_state(vec![SiteConfig {
-            host: "example.com".to_string(),
-            upstream: "127.0.0.1:8080".to_string(),
-            upstream_scheme: "http".to_string(),
-            upstream_connect_timeout_secs: 5,
-            upstream_request_timeout_secs: 60,
-        }]);
-        let router = proxy_router(state);
-        let req = make_request_with_connect_info(
-            "GET",
-            "/health",
-            Some("unknown.host"),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-        );
-        let resp = router.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

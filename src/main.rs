@@ -74,7 +74,6 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
         config: config_arc.clone(),
         http_client,
         https_client,
-        is_https: true,
     });
 
     let reload_handle = Arc::new(ConfigReloadHandle::new(

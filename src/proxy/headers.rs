@@ -18,7 +18,7 @@ pub fn remove_hop_by_hop(headers: &mut HeaderMap) {
     }
 }
 
-pub fn inject_proxy_headers(headers: &mut HeaderMap, remote_addr: SocketAddr, is_https: bool) {
+pub fn inject_proxy_headers(headers: &mut HeaderMap, remote_addr: SocketAddr) {
     let ip_str = remote_addr.ip().to_string();
     let ip_value =
         HeaderValue::from_str(&ip_str).unwrap_or_else(|_| HeaderValue::from_static("0.0.0.0"));
@@ -27,12 +27,13 @@ pub fn inject_proxy_headers(headers: &mut HeaderMap, remote_addr: SocketAddr, is
 
     headers.insert(HeaderName::from_static("x-forwarded-for"), ip_value);
 
-    let proto_value = if is_https {
-        HeaderValue::from_static("https")
-    } else {
-        HeaderValue::from_static("http")
-    };
-    headers.insert(HeaderName::from_static("x-forwarded-proto"), proto_value);
+    // X-Forwarded-Proto is always "https" because this proxy only forwards requests
+    // received on the TLS listener. The HTTP listener redirects to HTTPS and does not
+    // proxy requests, so X-Forwarded-Proto is never set for HTTP connections.
+    headers.insert(
+        HeaderName::from_static("x-forwarded-proto"),
+        HeaderValue::from_static("https"),
+    );
 }
 
 #[cfg(test)]
@@ -84,7 +85,7 @@ mod tests {
     fn inject_proxy_headers_sets_x_real_ip() {
         let mut h = HeaderMap::new();
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345);
-        inject_proxy_headers(&mut h, addr, true);
+        inject_proxy_headers(&mut h, addr);
         assert_eq!(h.get("x-real-ip").unwrap(), "192.168.1.1");
     }
 
@@ -96,24 +97,16 @@ mod tests {
             HeaderValue::from_static("10.0.0.1, 10.0.0.2"),
         );
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345);
-        inject_proxy_headers(&mut h, addr, true);
+        inject_proxy_headers(&mut h, addr);
         assert_eq!(h.get("x-forwarded-for").unwrap(), "192.168.1.1");
     }
 
     #[test]
-    fn inject_proxy_headers_sets_x_forwarded_proto_https() {
+    fn inject_proxy_headers_sets_x_forwarded_proto_to_https() {
         let mut h = HeaderMap::new();
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
-        inject_proxy_headers(&mut h, addr, true);
+        inject_proxy_headers(&mut h, addr);
         assert_eq!(h.get("x-forwarded-proto").unwrap(), "https");
-    }
-
-    #[test]
-    fn inject_proxy_headers_sets_x_forwarded_proto_http() {
-        let mut h = HeaderMap::new();
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 80);
-        inject_proxy_headers(&mut h, addr, false);
-        assert_eq!(h.get("x-forwarded-proto").unwrap(), "http");
     }
 
     #[test]
@@ -121,7 +114,7 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("host", HeaderValue::from_static("example.com"));
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
-        inject_proxy_headers(&mut h, addr, true);
+        inject_proxy_headers(&mut h, addr);
         assert_eq!(h.get("host").unwrap(), "example.com");
     }
 
