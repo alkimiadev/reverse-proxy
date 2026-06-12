@@ -12,7 +12,6 @@ use crate::shutdown::GracefulShutdown;
 
 const ACME_TLS_ALPN_01: &[u8] = b"acme-tls/1";
 
-#[allow(dead_code)]
 fn build_acme_server_config(
     resolver: Arc<rustls_acme::ResolvesServerCertAcme>,
 ) -> Result<Arc<ServerConfig>> {
@@ -31,8 +30,8 @@ fn build_acme_server_config(
     Ok(Arc::new(config))
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum TlsMode {
     Manual(Arc<ServerConfig>),
     Acme {
@@ -41,7 +40,6 @@ pub enum TlsMode {
     },
 }
 
-#[allow(dead_code)]
 pub fn setup_tls(tls_config: &TlsConfig, shutdown: Arc<GracefulShutdown>) -> Result<TlsMode> {
     match tls_config.mode.as_str() {
         "manual" => {

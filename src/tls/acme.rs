@@ -8,13 +8,10 @@ use tracing::{error, info, warn};
 
 use crate::shutdown::GracefulShutdown;
 
-#[allow(dead_code)]
 const LETS_ENCRYPT_PRODUCTION_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
-#[allow(dead_code)]
 const LETS_ENCRYPT_STAGING_DIRECTORY: &str =
     "https://acme-staging-v02.api.letsencrypt.org/directory";
 
-#[allow(dead_code)]
 pub struct AcmeTlsConfig {
     pub domains: Vec<String>,
     pub cache_dir: PathBuf,
@@ -22,7 +19,6 @@ pub struct AcmeTlsConfig {
     pub contact: Vec<String>,
 }
 
-#[allow(dead_code)]
 pub struct AcmeTlsSetup {
     pub resolver: Arc<ResolvesServerCertAcme>,
     pub state: AcmeState<std::io::Error, std::io::Error>,
@@ -54,7 +50,6 @@ impl AcmeTlsConfig {
         Ok(AcmeTlsSetup { resolver, state })
     }
 
-    #[allow(dead_code)]
     pub fn directory_url(&self) -> &str {
         match self.directory.as_str() {
             "production" => LETS_ENCRYPT_PRODUCTION_DIRECTORY,
@@ -64,7 +59,6 @@ impl AcmeTlsConfig {
     }
 }
 
-#[allow(dead_code)]
 pub fn spawn_acme_state(
     state: AcmeState<std::io::Error, std::io::Error>,
     domains: Vec<String>,
