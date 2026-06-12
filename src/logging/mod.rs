@@ -53,6 +53,7 @@ fn init_json(env_filter: EnvFilter, log_file_path: &Option<String>, level: Level
         }
         None => {
             let layer = tracing_subscriber::fmt::layer()
+                .json()
                 .with_ansi(false)
                 .with_filter(env_filter);
             tracing_subscriber::registry().with(layer).try_init()?;
