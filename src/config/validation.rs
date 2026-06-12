@@ -317,7 +317,15 @@ fn is_valid_upstream(upstream: &str) -> bool {
             Ok(p) => p,
             Err(_) => return false,
         };
-        port != 0
+        if port == 0 {
+            return false;
+        }
+        if host_part.starts_with('[') && host_part.ends_with(']') {
+            let inner = &host_part[1..host_part.len() - 1];
+            inner.parse::<std::net::Ipv6Addr>().is_ok()
+        } else {
+            host_part.parse::<std::net::IpAddr>().is_ok() || is_valid_hostname(host_part)
+        }
     } else {
         false
     }
@@ -1135,5 +1143,50 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| matches!(e, ValidationError::KeyPathNotReadable { .. })));
+    }
+
+    #[test]
+    fn rule17_upstream_valid_hostname() {
+        assert!(is_valid_upstream("gitea:3000"));
+    }
+
+    #[test]
+    fn rule17_upstream_valid_ipv4() {
+        assert!(is_valid_upstream("127.0.0.1:3000"));
+    }
+
+    #[test]
+    fn rule17_upstream_valid_ipv6_bracket() {
+        assert!(is_valid_upstream("[::1]:3000"));
+    }
+
+    #[test]
+    fn rule17_upstream_valid_ipv6_bracket_full() {
+        assert!(is_valid_upstream("[2001:db8::1]:8080"));
+    }
+
+    #[test]
+    fn rule17_upstream_invalid_hostname_chars() {
+        assert!(!is_valid_upstream("!!!bad!!!:3000"));
+    }
+
+    #[test]
+    fn rule17_upstream_invalid_special_chars() {
+        assert!(!is_valid_upstream("@#$%:8080"));
+    }
+
+    #[test]
+    fn rule17_upstream_empty_host() {
+        assert!(!is_valid_upstream(":3000"));
+    }
+
+    #[test]
+    fn rule17_upstream_invalid_ipv6_bracket() {
+        assert!(!is_valid_upstream("[notipv6]:3000"));
+    }
+
+    #[test]
+    fn rule17_upstream_hostname_with_dots() {
+        assert!(is_valid_upstream("app.example.com:8080"));
     }
 }
