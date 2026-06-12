@@ -1,7 +1,7 @@
 ---
 id: fix/tls-mode-wildcard-mismatch
 name: Add explicit listener/acceptor count check or remove TlsMode wildcard (W5)
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial
