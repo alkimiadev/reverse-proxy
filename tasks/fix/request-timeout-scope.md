@@ -1,7 +1,7 @@
 ---
 id: fix/request-timeout-scope
 name: Document request timeout scope and add Server header removal comment
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial
