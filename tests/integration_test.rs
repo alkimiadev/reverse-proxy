@@ -79,7 +79,7 @@ async fn test_health_check_local_port_binds_localhost() {
 }
 
 #[tokio::test]
-async fn test_health_check_disabled_when_port_zero() {
+async fn test_health_check_binds_random_port_when_zero() {
     let result = reverse_proxy::health::start_health_check_listener(0).await;
     assert!(result.is_ok());
     let (addr, handle) = result.unwrap();
@@ -687,21 +687,21 @@ fn test_validate_wildcard_bind_via_cli_flag() {
 }
 
 fn test_dynamic_config_with_limit(limit_bytes: u64) -> Arc<ArcSwap<DynamicConfig>> {
-    let config = DynamicConfig {
-        sites: vec![SiteConfig {
-            host: "test.local".to_string(),
-            upstream: "127.0.0.1:8080".to_string(),
-            upstream_scheme: "http".to_string(),
-            upstream_connect_timeout_secs: 5,
-            upstream_request_timeout_secs: 60,
-        }],
-        rate_limit: RateLimitConfig {
+    let sites = vec![SiteConfig {
+        host: "test.local".to_string(),
+        upstream: "127.0.0.1:8080".to_string(),
+        upstream_scheme: "http".to_string(),
+        upstream_connect_timeout_secs: 5,
+        upstream_request_timeout_secs: 60,
+    }];
+    let config = DynamicConfig::from_sites(
+        sites,
+        RateLimitConfig {
             requests_per_second: 10,
             burst: 20,
         },
-        body: BodyConfig { limit_bytes },
-        routing_table: Default::default(),
-    };
+        BodyConfig { limit_bytes },
+    );
     Arc::new(ArcSwap::from_pointee(config))
 }
 
