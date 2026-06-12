@@ -31,7 +31,6 @@ fn build_acme_server_config(
 }
 
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum TlsMode {
     Manual(Arc<ServerConfig>),
     Acme {
