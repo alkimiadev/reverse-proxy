@@ -34,14 +34,4 @@ impl TestUpstream {
     pub async fn spawn_ok() -> Self {
         Self::spawn(|| Router::new().route("/", get(|| async { "ok" }))).await
     }
-
-    #[allow(dead_code)]
-    pub fn url(&self) -> String {
-        format!("http://{}", self.addr)
-    }
-
-    #[allow(dead_code)]
-    pub fn upstream_addr(&self) -> String {
-        format!("127.0.0.1:{}", self.addr.port())
-    }
 }

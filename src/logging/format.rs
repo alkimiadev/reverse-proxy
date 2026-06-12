@@ -1,8 +1,10 @@
+#[cfg(test)]
 #[derive(Default)]
 struct KvVisitor {
     pairs: Vec<(String, String)>,
 }
 
+#[cfg(test)]
 impl KvVisitor {
     fn format(&self) -> String {
         let parts: Vec<String> = self
@@ -20,6 +22,7 @@ impl KvVisitor {
     }
 }
 
+#[cfg(test)]
 impl tracing::field::Visit for KvVisitor {
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         self.pairs
@@ -47,12 +50,6 @@ impl tracing::field::Visit for KvVisitor {
     }
 }
 
-pub fn format_event_fields(event: &tracing::Event<'_>) -> String {
-    let mut visitor = KvVisitor::default();
-    event.record(&mut visitor);
-    visitor.format()
-}
-
 #[macro_export]
 macro_rules! log_request {
     ($client_ip:expr, $host:expr, $method:expr, $path:expr, $status:expr, $upstream:expr, $duration_ms:expr) => {
@@ -70,19 +67,6 @@ macro_rules! log_request {
 }
 
 #[macro_export]
-macro_rules! log_rate_limit {
-    ($client_ip:expr, $host:expr, $path:expr, $status:expr) => {
-        tracing::warn!(
-            prefix = "RATE_LIMIT",
-            client_ip = %$client_ip,
-            host = %$host,
-            path = %$path,
-            status = %$status,
-        )
-    };
-}
-
-#[macro_export]
 macro_rules! log_upstream_error {
     ($host:expr, $upstream:expr, $error:expr) => {
         tracing::warn!(
@@ -90,17 +74,6 @@ macro_rules! log_upstream_error {
             host = %$host,
             upstream = %$upstream,
             error = %$error,
-        )
-    };
-}
-
-#[macro_export]
-macro_rules! log_config_reload {
-    ($status:expr, $sites:expr) => {
-        tracing::info!(
-            prefix = "CONFIG_RELOAD",
-            status = %$status,
-            sites = %$sites,
         )
     };
 }
@@ -180,8 +153,6 @@ mod tests {
             "127.0.0.1:3000",
             45u64
         );
-        log_rate_limit!("10.0.0.1", "example.com", "/login", 429u16);
         log_upstream_error!("git.alk.dev", "127.0.0.1:3000", "connection refused");
-        log_config_reload!("success", 1u32);
     }
 }
