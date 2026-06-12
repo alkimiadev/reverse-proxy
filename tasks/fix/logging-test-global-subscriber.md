@@ -1,7 +1,7 @@
 ---
 id: fix/logging-test-global-subscriber
 name: Fix logging test that conflicts with global tracing subscriber
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: low
