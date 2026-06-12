@@ -511,7 +511,7 @@ mode = "acme"
 acme_domains = ["test.local"]
 acme_cache_dir = "/tmp/acme-cache"
 
-[[listeners.listeners.sites]]
+[[listeners.sites]]
 host = "test.local"
 upstream = "127.0.0.1:8080"
 
