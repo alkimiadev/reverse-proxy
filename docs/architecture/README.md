@@ -1,5 +1,5 @@
 ---
-status: draft
+status: reviewed
 last_updated: 2026-06-12
 ---
 
@@ -7,7 +7,8 @@ last_updated: 2026-06-12
 
 ## Current State
 
-**Phase 0 (Exploration) — Complete.** Phase 1 (Architecture) — In progress.
+**Phase 1 (Implementation) — Complete.** The proxy is deployed and running in a
+Docker container, replacing our vulnerable nginx 1.24.0 installation.
 
 This project replaces our vulnerable nginx 1.24.0 installation with a
 memory-safe Rust/axum reverse proxy. The primary motivation is CVE-2026-42945
@@ -16,17 +17,19 @@ memory corruption bugs in nginx's C codebase.
 
 The proxy supports multiple domains from initial release (git.alk.dev and
 alk.dev), with per-domain host-based routing and a single multi-domain SAN
-certificate via ACME.
+certificate via ACME. HTTP/2 is supported on the client-facing side (between
+the client and the proxy) with ALPN-based protocol detection. Upstream
+connections remain HTTP/1.1.
 
 ## Architecture Documents
 
 | Document | Status | Description |
 |----------|--------|-------------|
-| [overview.md](overview.md) | Draft | Vision, scope, crate dependencies, exports |
-| [proxy.md](proxy.md) | Draft | Reverse proxy handler, request flow, header injection |
-| [tls.md](tls.md) | Draft | TLS termination, ACME, manual certs, SNI |
-| [config.md](config.md) | Draft | TOML config format, static/dynamic split, ArcSwap reload |
-| [operations.md](operations.md) | Draft | Rate limiting, logging, health check, systemd, shutdown |
+| [overview.md](overview.md) | Reviewed | Vision, scope, crate dependencies, exports |
+| [proxy.md](proxy.md) | Reviewed | Reverse proxy handler, request flow, header injection |
+| [tls.md](tls.md) | Reviewed | TLS termination, ACME, manual certs, SNI, ALPN |
+| [config.md](config.md) | Reviewed | TOML config format, static/dynamic split, ArcSwap reload |
+| [operations.md](operations.md) | Reviewed | Rate limiting, logging, health check, systemd, shutdown |
 
 ## ADR Table
 
@@ -54,6 +57,8 @@ certificate via ACME.
 | [020](decisions/020-container-deployment.md) | Container Deployment Model | Accepted |
 | [021](decisions/021-x-forwarded-for-edge-proxy.md) | X-Forwarded-For Edge Proxy Model | Accepted |
 | [022](decisions/022-health-check-scope.md) | Health Check Scope — Local Port and Admin Socket Only | Accepted |
+| [023](decisions/023-http2-client-facing.md) | HTTP/2 Client-Facing Support | Accepted |
+| [024](decisions/024-ansi-disabled-logging.md) | ANSI-Disabled Logging for Container Deployments | Accepted |
 
 ## Open Questions
 

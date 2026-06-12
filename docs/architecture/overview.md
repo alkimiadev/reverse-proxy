@@ -1,5 +1,5 @@
 ---
-status: draft
+status: reviewed
 last_updated: 2026-06-12
 ---
 
@@ -44,6 +44,9 @@ details.
     (SAN certificate) deployment models (ADR-019)
   - TLS termination with ACME (Let's Encrypt) and manual certificate management
   - Cipher suite restriction matching nginx scope (ECDHE-AES-GCM + TLS 1.3)
+  - HTTP/2 support on the client-facing side (between client and proxy),
+    with ALPN-based protocol detection (ADR-023). Upstream connections
+    remain HTTP/1.1.
   - HTTP → HTTPS redirect
   - Host-based routing to multiple upstream services
   - Reverse proxy to Gitea at `127.0.0.1:3000` (git.alk.dev)
@@ -55,7 +58,7 @@ details.
   - Configurable bind addresses (must be explicit, no `0.0.0.0`)
   - Local health check endpoint on separate port (default: 9900, localhost only)
   - Unix domain socket admin API for config reload with feedback
-  - Graceful shutdown (SIGTERM handling)
+  - Graceful shutdown (SIGTERM handling with in-flight request drain)
   - Systemd unit file
   - Dual licensing: MIT OR Apache-2.0
 
@@ -70,8 +73,10 @@ details.
 
 ### Out of Scope
 
-- HTTP/2 or HTTP/3 proxying (services that need these run their own native
-  Rust servers — e.g., `api.alk.dev` runs its own HTTP/2+ server)
+- HTTP/2 or HTTP/3 **proxying to upstreams** — the proxy communicates with
+  upstreams over HTTP/1.1 (or HTTPS/1.1). HTTP/2 **from clients** is supported
+  (see ADR-023). Services that need HTTP/2+ to their backends can handle
+  termination themselves.
 - Load balancing or round-robin upstream selection
 - WebSocket proxying (can be added later if needed)
 - Static file serving
@@ -143,11 +148,14 @@ loopback, LAN, and tunnel endpoints for multi-host deployments.
 |-------|---------|---------|-------|
 | `axum` | 0.8 | HTTP framework | Routing, middleware, extractors |
 | `tokio` | 1 (full) | Async runtime | Multi-threaded runtime |
-| `hyper` | 1 | HTTP protocol | Used via axum, and directly for proxy `Client` |
+| `hyper` | 1 | HTTP protocol | Used via axum, and directly for HTTP/2 server builder |
+| `hyper-util` | 0.1 | Hyper utilities | Client builder, TokioExecutor, auto::Builder |
 | `tower` | 0.5 | Middleware ecosystem | Service trait, layers |
 | `rustls` | 0.23 | TLS implementation | `aws_lc_rs` crypto provider |
 | `tokio-rustls` | 0.26 | Async TLS I/O | Wraps TCP with TLS |
 | `rustls-acme` | 0.12 | ACME client | Let's Encrypt auto-provisioning and renewal |
+| `hyper-rustls` | 0.27 | HTTPS client | Upstream HTTPS connections with rustls TLS |
+| `rustls-native-certs` | 0.8 | Native cert loading | System root certificates for upstream HTTPS validation |
 
 ### Supporting
 
@@ -206,6 +214,9 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [019](decisions/019-multi-config-listeners.md) | Multi-config listeners | `[[listeners]]` supporting both dedicated-IP and shared-IP deployment models |
 | [020](decisions/020-container-deployment.md) | Container deployment model | Defense-in-depth via container isolation; file-primary logging; flexible upstream addressing |
 | [021](decisions/021-x-forwarded-for-edge-proxy.md) | X-Forwarded-For edge proxy model | Replace, don't append — proxy is the edge, no trusted upstream proxies |
+| [022](decisions/022-health-check-scope.md) | Health check scope — local port and admin socket only | No `/health` route on main listener; health check is port 9900/admin socket only |
+| [023](decisions/023-http2-client-facing.md) | HTTP/2 client-facing support | ALPN-based protocol detection; HTTP/2 to clients, HTTP/1.1 to upstreams |
+| [024](decisions/024-ansi-disabled-logging.md) | ANSI-disabled logging | All log output uses `with_ansi(false)` for fail2ban and Docker compatibility |
 
 ## Open Questions
 

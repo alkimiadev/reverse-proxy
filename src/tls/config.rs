@@ -67,6 +67,11 @@ pub fn build_manual_server_config(cert_path: &str, key_path: &str) -> Result<Ser
         .with_single_cert(certs, key)
         .with_context(|| "failed to configure certificate/key pair")?;
 
+    let mut config = config;
+    // Advertise HTTP/2 and HTTP/1.1 via ALPN so clients can negotiate HTTP/2.
+    // Note: acme-tls/1 is NOT included here — it's only needed for ACME mode.
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
     Ok(config)
 }
 
@@ -87,6 +92,11 @@ pub fn build_multi_domain_server_config(
         .with_context(|| "failed to set protocol versions")?
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(resolver));
+
+    let mut config = config;
+    // Advertise HTTP/2 and HTTP/1.1 via ALPN so clients can negotiate HTTP/2.
+    // Note: acme-tls/1 is NOT included here — it's only needed for ACME mode.
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(config)
 }

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: reviewed
 last_updated: 2026-06-12
 ---
 
@@ -134,6 +134,11 @@ Logs are written to two destinations simultaneously:
 - **stdout/stderr**: Always-on, for `docker logs`, `journalctl`, and
   development use. Structured in the same format as the file output.
 
+Both output destinations use `with_ansi(false)` to disable ANSI escape codes.
+This is critical for fail2ban log parsing (ANSI codes break regex matching) and
+for clean output in Docker containers where a terminal is not attached. See
+ADR-024.
+
 The `tracing-subscriber` layer configuration supports both simultaneously via
 `Layer` composition.
 
@@ -154,6 +159,12 @@ volumes:
 
 A corresponding fail2ban filter definition and jail configuration are provided
 as part of the deployment documentation.
+
+**Filter regex note**: The fail2ban `failregex` pattern matches `RATE_LIMIT`
+without a `^` anchor because log lines have a timestamp/level prefix before the
+`RATE_LIMIT` keyword. The pattern `RATE_LIMIT client_ip=<HOST> host=\S+ path=\S+ status=\d+`
+matches the rate limit event anywhere in the line, which correctly handles the
+structured log format.
 
 ### Log Levels
 
@@ -580,6 +591,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [013](decisions/013-health-check-port.md) | Health check on separate local port | Localhost-only HTTP health check, configurable port |
 | [014](decisions/014-unix-socket-reload.md) | Unix domain socket config reload API | Programmatic reload with success/failure feedback |
 | [020](decisions/020-container-deployment.md) | Container deployment model | Defense-in-depth via container isolation; file-primary logging |
+| [024](decisions/024-ansi-disabled-logging.md) | ANSI-disabled logging | All log output uses `with_ansi(false)` for fail2ban and Docker compatibility |
 
 ## Open Questions
 

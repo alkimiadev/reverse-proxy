@@ -1,5 +1,5 @@
 ---
-status: draft
+status: reviewed
 last_updated: 2026-06-12
 ---
 
@@ -21,7 +21,16 @@ general-purpose proxy library (ADR-002, ADR-010).
 ## Architecture
 
 ```
-Incoming HTTPS request
+Incoming HTTPS request (HTTP/1.1 or HTTP/2)
+        │
+        ▼
+┌─────────────────────────────────────────────┐
+│  TLS Listener                                │
+│  ALPN protocol detection:                    │
+│  - h2  → hyper http2::Builder                │
+│  - http/1.1 (or none) → auto::Builder        │
+│  ConnectInfo<SocketAddr> from peer_addr       │
+└───────┬──────────────────────────────────────┘
         │
         ▼
 ┌─────────────────┐
@@ -29,8 +38,9 @@ Incoming HTTPS request
 │  (Host-based)    │
 │                  │
 │  match Host      │
-│  header on       │
-│  incoming req    │
+│  header or       │
+│  URI :authority  │
+│  on incoming req │
 └───────┬─────────┘
         │
         ▼
@@ -45,9 +55,9 @@ Incoming HTTPS request
 │ Injection        │
 │                  │
 │ X-Real-IP        │  ← connect_info remote_addr
-│ X-Forwarded-For  │  ← append to existing or set
-│ X-Forwarded-Proto │  ← "https" (or "http" on port 80)
-│ Host             │  ← original host header (already set)
+│ X-Forwarded-For  │  ← replace (edge proxy model)
+│ X-Forwarded-Proto │  ← "https" (always, on TLS listener)
+│ Host             │  ← original host (already set)
 └───────┬─────────┘
         │
         ▼
@@ -66,6 +76,7 @@ Incoming HTTPS request
 │    original req   │
 │ 2. Forward req   │
 │    to upstream    │
+│    (HTTP/1.1)    │
 │ 3. Stream        │
 │    response back  │
 └─────────────────┘
@@ -75,18 +86,26 @@ Incoming HTTPS request
 
 ### 1. Host-Based Routing
 
-The axum router uses a `Host` extractor to match incoming requests to site
-definitions from `DynamicConfig`. Sites are defined per-listener in the TOML
-configuration for organizational purposes, but at runtime they are collected
-into a single global routing table. The proxy looks up the `Host` header in
-this global table and either proxies to the upstream or returns 404.
+The axum router matches incoming requests to site definitions from
+`DynamicConfig`. Sites are defined per-listener in the TOML configuration for
+organizational purposes, but at runtime they are collected into a single global
+routing table. The proxy looks up the host in this global table and either
+proxies to the upstream or returns 404.
 
-Host matching is **case-insensitive** per RFC 7230 §2.7.3. The `Host` header
-is normalized to lowercase before matching. Site `host` values in
-configuration are normalized to lowercase during validation.
+Host matching is **case-insensitive** per RFC 7230 §2.7.3. The host is
+normalized to lowercase before matching. Site `host` values in configuration are
+normalized to lowercase during validation.
 
 The `Host` header port component (e.g., `git.alk.dev:443`) is stripped before
 matching. Site `host` values must not include ports.
+
+**HTTP/2 host resolution**: In HTTP/2, the host is conveyed via the
+`:authority` pseudo-header rather than the `Host` header. Hyper represents this
+as the URI host. The proxy handler resolves the host by first checking the
+`Host` header, then falling back to `req.uri().host()`. This correctly handles
+both HTTP/1.1 (which always has a `Host` header) and HTTP/2 (which uses
+`:authority`/URI host). If neither is present, the proxy returns 400 Bad
+Request. See ADR-023.
 
 The proxy does not filter or restrict paths. All paths and query strings on a
 known host are forwarded to the upstream without modification.
@@ -124,8 +143,9 @@ The proxy handler constructs a new request to the upstream:
    address, preserving the original path and query string
 2. Copy the request method, headers, and body from the original
 3. Inject proxy headers (X-Real-IP, X-Forwarded-For, X-Forwarded-Proto)
-4. Send the request via a shared hyper Client instance
-5. Stream the response back to the client (chunk-by-chunk, not buffered)
+4. Remove hop-by-hop headers (Connection, Keep-Alive, Transfer-Encoding, etc.)
+5. Send the request via a shared hyper Client instance
+6. Stream the response back to the client (chunk-by-chunk, not buffered)
 
    If the client disconnects while the upstream is still sending, the upstream
    connection is closed and the event is logged at `debug` level. If the
@@ -135,12 +155,23 @@ The proxy handler constructs a new request to the upstream:
 The hyper Client is created once at startup and shared via axum's `State`. It
 must be configured with (see ADR-017 for rationale):
 - Connection pooling (hyper default behavior)
-- HTTP/1.1 only for upstream connections (HTTP/2 proxying is out of scope)
+- HTTP/1.1 only for upstream connections (HTTP/2 proxying to upstreams is out
+  of scope; see ADR-023 for the distinction between client-facing HTTP/2 and
+  upstream HTTP/2)
 - No redirect following (proxies should not follow redirects)
+- Separate connect timeout and request timeout (see ADR-015, ADR-017)
+
+Two client instances are created at startup:
+- **HTTP client**: For upstream connections using `http://` scheme
+- **HTTPS client**: For upstream connections using `https://` scheme (using
+  `hyper-rustls` with system native TLS root certificates for certificate
+  validation)
 
 Per-site timeout overrides are available via `upstream_connect_timeout_secs`
 and `upstream_request_timeout_secs` in `SiteConfig` (see ADR-015). When not
-specified, defaults of 5s connect and 60s request are used.
+specified, defaults of 5s connect and 60s request are used. Both timeouts are
+enforced using `tokio::time::timeout`, with the connect timeout nested inside
+the request timeout to ensure the overall deadline is respected.
 
 ### 4. Header Handling
 
@@ -162,6 +193,12 @@ These headers are connection-specific and must not be forwarded to the
 upstream. Removing `Proxy-Authorization` and `Proxy-Authenticate` prevents
 credential leakage.
 
+**Response headers removed:**
+
+- `Server`: The upstream's `Server` header is intentionally removed as a
+  defense-in-depth measure. The proxy does not add its own `Server` header
+  either. This hides upstream server identity from clients.
+
 **Headers added or modified:**
 
 See the Proxy Header Injection section above for the full list of proxy headers
@@ -174,9 +211,10 @@ See the Proxy Header Injection section above for the full list of proxy headers
 
 **Response headers:**
 
-Upstream response headers are forwarded as-is to the client, with the following
+Upstream response headers are forwarded to the client with the following
 exceptions:
 - Hop-by-hop headers listed above are removed
+- The `Server` header is removed (defense-in-depth: hiding upstream identity)
 - The proxy does not add a `Server` header to responses
 
 ### 5. Error Handling
@@ -189,13 +227,15 @@ information. No upstream error details are included. Response format:
 
 | Upstream Condition | Response | Body | Notes |
 |-------------------|----------|------|-------|
-| Upstream reachable | Stream response as-is | (upstream body) | Headers, status, body all forwarded |
+| Upstream reachable | Stream response as-is | (upstream body) | Headers, status, body all forwarded (minus hop-by-hop and Server headers) |
 | Upstream unreachable | 502 Bad Gateway | `Bad Gateway` | Logged at `warn` level |
-| Upstream timeout | 504 Gateway Timeout | `Gateway Timeout` | Logged at `warn` level |
+| Upstream connect timeout | 504 Gateway Timeout | `Gateway Timeout` | Connect phase timed out; logged at `warn` level |
+| Upstream request timeout | 504 Gateway Timeout | `Gateway Timeout` | Full request timed out; logged at `warn` level |
+| Upstream TLS validation failure | 502 Bad Gateway | `Bad Gateway` | Upstream HTTPS cert validation failed |
 | Request body too large | 413 Payload Too Large | `Payload Too Large` | From `DefaultBodyLimit` middleware |
 | Rate limit exceeded | 429 Too Many Requests | `Too Many Requests` | Logged at `info` level |
 | Unknown Host header | 404 Not Found | `Not Found` | No matching site definition |
-| Missing Host header | 400 Bad Request | `Bad Request` | Required for routing |
+| Missing Host header (and no URI host) | 400 Bad Request | `Bad Request` | Required for routing; HTTP/2 clients use `:authority` |
 
 ### 6. HTTP → HTTPS Redirect
 
@@ -219,18 +259,30 @@ Each listener has its own HTTP redirect on its own bind address.
 ## Upstream Connection
 
 The upstream connection scheme defaults to `http://` since the proxy and backend
-services typically run on the same host (e.g., `127.0.0.1:3000`). The
-`upstream_scheme` field in each site's configuration allows specifying `https://`
-for upstreams that require TLS (e.g., separate hosts or secure internal services).
+services typically run on the same host (e.g., `127.0.0.1:3000`) or the same
+Docker network (e.g., `gitea:3000`). The `upstream_scheme` field in each site's
+configuration allows specifying `https://` for upstreams that require TLS
+(e.g., separate hosts or secure internal services).
 
 For the initial deployment, upstream connections use plain HTTP (e.g.,
-`git.alk.dev` → `127.0.0.1:3000`, `alk.dev` → `127.0.0.1:8080`) since TLS
-between the proxy and backend services on loopback is unnecessary.
+`git.alk.dev` → `gitea:3000`, `alk.dev` → `app:8080`) since TLS between the
+proxy and backend services on the same Docker network or loopback is
+unnecessary.
 
 When `upstream_scheme` is `"https"`, the proxy validates the upstream's TLS
 certificate using the system's native TLS root certificates (via `rustls` root
-cert store). Certificate validation failures result in a 502 Bad Gateway
-response. No certificate pinning or custom CA support is provided in Phase 1.
+cert store loaded by `rustls-native-certs`). Certificate validation failures
+result in a 502 Bad Gateway response. No certificate pinning or custom CA
+support is provided in Phase 1.
+
+Two shared hyper Client instances handle upstream connections:
+- **HTTP client** (`Client<HttpConnector, Body>`): For `http://` upstreams
+- **HTTPS client** (`Client<HttpsConnector<HttpConnector>, Body>`): For
+  `https://` upstreams, using `hyper-rustls` with system native certificates
+
+Both clients enforce the per-site connect timeout (default 5s) at the TCP level
+via `HttpConnector::set_connect_timeout()` and the overall request timeout
+(default 60s) via `tokio::time::timeout`.
 
 ## Body Size Limit
 
@@ -253,6 +305,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [017](decisions/017-upstream-connection-defaults.md) | Upstream connection defaults | HTTP/1.1, no redirects, connection pooling |
 | [018](decisions/018-body-size-limit.md) | Request body size limit | 100 MB default matching nginx, Gitea push compatibility |
 | [021](decisions/021-x-forwarded-for-edge-proxy.md) | X-Forwarded-For edge proxy model | Replace, don't append — proxy is the edge, no trusted upstream proxies |
+| [023](decisions/023-http2-client-facing.md) | HTTP/2 client-facing support | ALPN-based protocol detection; HTTP/2 to clients, HTTP/1.1 to upstreams |
 
 ## Open Questions
 
@@ -264,3 +317,6 @@ questions affecting this document have been resolved:
 - ~~**OQ-08**: Should the `/health` path use a less common endpoint to avoid
   upstream collision?~~ (resolved — ADR-022: no `/health` route on the main
   listener; health checking is via port 9900 and admin socket only)
+- ~~**OQ-09**: How should `upstream_connect_timeout_secs` be enforced?~~
+  (resolved — two-phase timeout with `tokio::time::timeout`; connect timeout
+  nested inside request timeout; TCP-level `set_connect_timeout` on connector)

@@ -1,6 +1,6 @@
 ---
-status: draft
-last_updated: 2026-06-11
+status: reviewed
+last_updated: 2026-06-12
 ---
 
 # Configuration
@@ -100,6 +100,10 @@ Immutable after startup. Changes require a process restart.
 | `format` | `"text"` or `"json"` | Log output format |
 | `log_file_path` | `String` | Path to log file. When set, structured logs are written to this file in addition to stdout/stderr. Strongly recommended for fail2ban integration in container deployments (see ADR-020). Default: not set (file logging disabled) |
 
+**Note**: All log output uses `with_ansi(false)` to disable ANSI escape codes.
+This is critical for fail2ban regex matching and Docker log output (see ADR-024).
+Both text and JSON formats produce plain-text output without color codes.
+
 **Note**: The entire `LoggingConfig` (including `log_file_path`) is static and
 requires a process restart to change. Log file path changes require reopening
 file handles, which is complex and low-value for Phase 1. Log rotation (Phase 2)
@@ -110,7 +114,7 @@ will be handled via signal-based or built-in rotation.
 | Field | Type | Description |
 |-------|------|-------------|
 | `bind_addr` | `String` | IP address to bind to (must be explicit, no `0.0.0.0`; see ADR-016) |
-| `http_port` | `u16` | Port for HTTP→HTTPS redirect (default: `80`; set to `0` to disable) |
+| `http_port` | `u32` | Port for HTTP→HTTPS redirect (default: `80`; set to `0` to disable; valid values: 0 or 1–65535) |
 | `https_port` | `u16` | Port for TLS listener (default: `443`) |
 | `tls.mode` | `"acme"` or `"manual"` | Certificate provisioning mode |
 | `tls.acme_domains` | `Vec<String>` | Domains for ACME SAN certificate (ACME mode only) |

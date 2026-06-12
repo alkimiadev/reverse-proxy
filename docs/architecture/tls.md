@@ -1,6 +1,6 @@
 ---
-status: draft
-last_updated: 2026-06-11
+status: reviewed
+last_updated: 2026-06-12
 ---
 
 # TLS Termination
@@ -175,14 +175,32 @@ maps SNI hostnames to certificate/key pairs loaded from disk.
 For ACME mode, the `ServerConfig` is built with `with_cert_resolver()`, passing
 the `ResolvesServerCertAcme` resolver. The ACME configuration includes the
 domains listed in that listener's `acme_domains`, and the resolver manages the
-certificate. The ACME TLS-ALPN-01 protocol identifier (`acme-tls/1`) must be
-registered in the `alpn_protocols` list so the server can respond to
-TLS-ALPN-01 challenges.
+certificate.
+
+The TLS `ServerConfig` advertises ALPN protocols to enable HTTP/2 negotiation.
+The ALPN configuration differs by TLS mode:
+
+- **ACME mode**: `h2`, `http/1.1`, and `acme-tls/1`. The `acme-tls/1` entry is
+  required for TLS-ALPN-01 challenge verification during certificate provisioning.
+- **Manual mode** (single-cert and multi-domain/SNI): `h2` and `http/1.1` only.
+  The `acme-tls/1` entry is not included because manual mode does not use ACME
+  challenges.
+
+After the TLS handshake, the proxy inspects the negotiated ALPN protocol to
+select the appropriate HTTP server: `h2` triggers
+`hyper::server::conn::http2::Builder`, while `http/1.1` (or no ALPN) triggers
+`hyper_util::server::conn::auto::Builder`. See ADR-023 for details.
 
 Both modes use the `aws_lc_rs` crypto provider with safe default protocol
 versions (TLS 1.2 and TLS 1.3).
 
 ## SNI-Based Certificate Selection
+
+After the TLS handshake, the proxy inspects the negotiated ALPN protocol to
+determine whether to serve the connection as HTTP/2 or HTTP/1.1. If the client
+negotiated `h2` via ALPN, the proxy uses `hyper::server::conn::http2::Builder`;
+otherwise, it uses `hyper_util::server::conn::auto::Builder` with HTTP/1.1
+and upgrade support. See ADR-023 for details.
 
 ### Dedicated-IP Single-Domain (Multi-Config)
 
@@ -305,6 +323,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [011](decisions/011-multi-domain-tls.md) | Multi-domain TLS config | Single SAN certificate covering all domains via rustls-acme |
 | [012](decisions/012-cipher-suite-restriction.md) | Restrict cipher suites | Match nginx scope: four ECDHE-AES-GCM suites for TLS 1.2, all TLS 1.3 suites |
 | [019](decisions/019-multi-config-listeners.md) | Multi-config listeners | `[[listeners]]` supporting both dedicated-IP and shared-IP deployment models |
+| [023](decisions/023-http2-client-facing.md) | HTTP/2 client-facing support | ALPN-based protocol detection; `h2` and `http/1.1` advertised |
 
 ## Open Questions
 

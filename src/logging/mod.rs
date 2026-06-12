@@ -39,9 +39,11 @@ fn init_json(env_filter: EnvFilter, log_file_path: &Option<String>, level: Level
             let file_env_filter = make_env_filter(level);
             let stdout_layer = tracing_subscriber::fmt::layer()
                 .json()
+                .with_ansi(false)
                 .with_filter(env_filter);
             let file_layer = tracing_subscriber::fmt::layer()
                 .json()
+                .with_ansi(false)
                 .with_writer(file_writer)
                 .with_filter(file_env_filter);
             tracing_subscriber::registry()

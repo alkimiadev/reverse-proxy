@@ -1,5 +1,5 @@
 ---
-status: draft
+status: reviewed
 last_updated: 2026-06-12
 ---
 
@@ -114,15 +114,14 @@ last_updated: 2026-06-12
 - **Origin**: Implementation review finding W4, ADR-015, ADR-017
 - **Status**: resolved
 - **Priority**: medium
-- **Resolution**: This is an implementation gap, not an architectural unknown.
-  The architecture already specifies a 5-second default connect timeout
-  separate from the request timeout (ADR-015, ADR-017), and `SiteConfig`
-  already includes `upstream_connect_timeout_secs`. The implementation must
-  wire this field to hyper's `connect_timeout` parameter. If hyper's API
-  doesn't expose a separate connect timeout, a two-phase `tokio::time::timeout`
-  approach should be used for Phase 2. For Phase 1, the connect timeout field
-  exists in config but is not enforced — this is a documented known gap. No ADR
-  needed; the decision was already made in ADR-015.
+- **Resolution**: Implemented using a two-phase `tokio::time::timeout` approach.
+  The inner timeout uses the per-site `upstream_connect_timeout_secs` (default
+  5s) for the connect + first-byte phase, and the outer timeout uses
+  `upstream_request_timeout_secs` (default 60s) for the full request/response
+  cycle. Additionally, `HttpConnector::set_connect_timeout()` enforces the
+  TCP-level connect timeout on both HTTP and HTTPS clients. The implementation
+  is in `handler.rs` and `create_http_client()`/`create_https_client()`.
+  No new ADR needed; the decision was already made in ADR-015.
 - **Cross-references**: ADR-015, ADR-017
 
 ### ~~OQ-10: Should ACME contact email be a required config field?~~
@@ -134,9 +133,10 @@ last_updated: 2026-06-12
   specifies `acme_contact` as a required field in ACME mode (config.md
   validation rule 19). The field is defined in the `ListenerConfig` table and
   shown in TOML examples. Let's Encrypt requires a contact email for production
-  certificate requests. The implementation bug (C2: `contact: vec![]`) must be
-  fixed to use the configured `acme_contact` value. No new ADR needed — the
-  decision is already documented in config.md and tls.md.
+  certificate requests. The implementation bug (C2: `contact: vec![]`) has been
+  fixed — `acme_contact` is now correctly wired from config to the ACME state
+  machine. No new ADR needed — the decision is already documented in config.md
+  and tls.md.
 - **Cross-references**: ADR-004
 
 ### ~~OQ-11: How should `X-Forwarded-Proto` be derived per-listener?~~
