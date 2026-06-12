@@ -31,26 +31,11 @@ fn build_acme_server_config(
 }
 
 #[allow(dead_code)]
-fn build_acme_challenge_config(
-    resolver: Arc<rustls_acme::ResolvesServerCertAcme>,
-) -> Arc<ServerConfig> {
-    let provider = crypto_provider();
-    let mut config = ServerConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&TLS12, &TLS13])
-        .expect("valid protocol versions")
-        .with_no_client_auth()
-        .with_cert_resolver(resolver);
-    config.alpn_protocols = vec![ACME_TLS_ALPN_01.to_vec()];
-    Arc::new(config)
-}
-
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum TlsMode {
     Manual(Arc<ServerConfig>),
     Acme {
         default_config: Arc<ServerConfig>,
-        challenge_config: Arc<ServerConfig>,
         resolver: Arc<rustls_acme::ResolvesServerCertAcme>,
     },
 }
@@ -83,13 +68,12 @@ pub fn setup_tls(tls_config: &TlsConfig) -> Result<TlsMode> {
                 domains: tls_config.acme_domains.clone(),
                 cache_dir: tls_config.acme_cache_dir.clone().into(),
                 directory: tls_config.acme_directory.clone(),
-                contact: vec![],
+                contact: vec![tls_config.acme_contact.clone()],
             };
 
             let super::acme::AcmeTlsSetup { resolver, state } = acme_tls_config.setup()?;
 
             let default_config = build_acme_server_config(resolver.clone())?;
-            let challenge_config = build_acme_challenge_config(resolver.clone());
 
             spawn_acme_state(state, tls_config.acme_domains.clone());
 
@@ -100,7 +84,6 @@ pub fn setup_tls(tls_config: &TlsConfig) -> Result<TlsMode> {
 
             Ok(TlsMode::Acme {
                 default_config,
-                challenge_config,
                 resolver,
             })
         }
@@ -143,20 +126,13 @@ mod tests {
     }
 
     #[test]
-    fn test_build_acme_challenge_config() {
-        let resolver = make_test_resolver();
-        let config = build_acme_challenge_config(resolver);
-        assert_eq!(config.alpn_protocols.len(), 1);
-        assert_eq!(config.alpn_protocols[0], ACME_TLS_ALPN_01);
-    }
-
-    #[test]
     fn test_setup_tls_manual_missing_cert_path() {
         let tls_config = TlsConfig {
             mode: "manual".to_string(),
             acme_domains: vec![],
             acme_cache_dir: String::new(),
             acme_directory: "production".to_string(),
+            acme_contact: String::new(),
             cert_path: String::new(),
             key_path: "/some/key.pem".to_string(),
         };
@@ -173,6 +149,7 @@ mod tests {
             acme_domains: vec![],
             acme_cache_dir: String::new(),
             acme_directory: "production".to_string(),
+            acme_contact: String::new(),
             cert_path: "/some/cert.pem".to_string(),
             key_path: String::new(),
         };
@@ -189,6 +166,7 @@ mod tests {
             acme_domains: vec![],
             acme_cache_dir: "/tmp/cache".to_string(),
             acme_directory: "staging".to_string(),
+            acme_contact: "mailto:admin@example.com".to_string(),
             cert_path: String::new(),
             key_path: String::new(),
         };
@@ -205,6 +183,7 @@ mod tests {
             acme_domains: vec!["example.com".to_string()],
             acme_cache_dir: String::new(),
             acme_directory: "staging".to_string(),
+            acme_contact: "mailto:admin@example.com".to_string(),
             cert_path: String::new(),
             key_path: String::new(),
         };
@@ -221,6 +200,7 @@ mod tests {
             acme_domains: vec![],
             acme_cache_dir: String::new(),
             acme_directory: "production".to_string(),
+            acme_contact: String::new(),
             cert_path: String::new(),
             key_path: String::new(),
         };

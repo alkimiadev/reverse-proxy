@@ -12,6 +12,7 @@ pub fn test_static_config() -> StaticConfig {
                 acme_domains: vec!["test.local".to_string()],
                 acme_cache_dir: "/tmp/acme-cache".to_string(),
                 acme_directory: "staging".to_string(),
+                acme_contact: "mailto:admin@test.local".to_string(),
                 cert_path: String::new(),
                 key_path: String::new(),
             },

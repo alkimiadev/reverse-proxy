@@ -271,6 +271,7 @@ fn make_redirect_listener_config(
             acme_domains: vec![],
             acme_cache_dir: String::new(),
             acme_directory: "production".to_string(),
+            acme_contact: String::new(),
             cert_path: String::new(),
             key_path: String::new(),
         },

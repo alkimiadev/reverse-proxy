@@ -165,11 +165,7 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
                     "Manual TLS configured"
                 );
             }
-            TlsMode::Acme {
-                default_config,
-                challenge_config: _,
-                resolver: _,
-            } => {
+            TlsMode::Acme { default_config, .. } => {
                 let acceptor = TlsAcceptor::from(default_config);
                 tls_acceptors.push(acceptor);
                 info!(

@@ -70,6 +70,8 @@ pub enum ValidationError {
     UpstreamInvalid { host: String, upstream: String },
     #[error("site '{host}': upstream_scheme must be 'http' or 'https', got '{scheme}'")]
     UpstreamSchemeInvalid { host: String, scheme: String },
+    #[error("listener {bind_addr}: ACME mode requires acme_contact to be a valid mailto: URI (e.g., \"mailto:admin@example.com\")")]
+    AcmeContactInvalid { bind_addr: String },
 }
 
 pub fn validate(
@@ -139,6 +141,12 @@ pub fn validate(
             "acme" => {
                 if listener.tls.acme_domains.is_empty() {
                     errors.push(ValidationError::AcmeDomainsEmpty {
+                        bind_addr: listener.bind_addr.clone(),
+                    });
+                }
+                let contact = &listener.tls.acme_contact;
+                if contact.is_empty() || !contact.starts_with("mailto:") {
+                    errors.push(ValidationError::AcmeContactInvalid {
                         bind_addr: listener.bind_addr.clone(),
                     });
                 }
@@ -331,6 +339,7 @@ mod tests {
                     acme_domains: vec![],
                     acme_cache_dir: String::new(),
                     acme_directory: "production".to_string(),
+                    acme_contact: String::new(),
                     cert_path: String::new(),
                     key_path: String::new(),
                 },
@@ -386,6 +395,7 @@ mod tests {
             acme_domains: vec!["test.local".to_string()],
             acme_cache_dir: "/tmp/acme-cache".to_string(),
             acme_directory: "production".to_string(),
+            acme_contact: "mailto:admin@example.com".to_string(),
             cert_path: String::new(),
             key_path: String::new(),
         }
@@ -397,6 +407,7 @@ mod tests {
             acme_domains: vec![],
             acme_cache_dir: String::new(),
             acme_directory: "production".to_string(),
+            acme_contact: String::new(),
             cert_path: cert.to_string(),
             key_path: key.to_string(),
         }
@@ -497,6 +508,7 @@ mod tests {
             acme_domains: vec![],
             acme_cache_dir: "/tmp/cache".to_string(),
             acme_directory: "production".to_string(),
+            acme_contact: "mailto:admin@example.com".to_string(),
             cert_path: String::new(),
             key_path: String::new(),
         };
@@ -517,6 +529,7 @@ mod tests {
             acme_domains: vec![],
             acme_cache_dir: String::new(),
             acme_directory: "production".to_string(),
+            acme_contact: String::new(),
             cert_path: String::new(),
             key_path: String::new(),
         };
@@ -915,6 +928,80 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| matches!(e, ValidationError::UpstreamSchemeInvalid { .. })));
+    }
+
+    #[test]
+    fn rule19_acme_contact_empty() {
+        let mut config = valid_static_config();
+        config.listeners[0].tls = TlsConfig {
+            mode: "acme".to_string(),
+            acme_domains: vec!["test.local".to_string()],
+            acme_cache_dir: "/tmp/cache".to_string(),
+            acme_directory: "production".to_string(),
+            acme_contact: String::new(),
+            cert_path: String::new(),
+            key_path: String::new(),
+        };
+        config.listeners[0].sites = vec![SiteConfig {
+            host: "test.local".to_string(),
+            upstream: "127.0.0.1:8080".to_string(),
+            ..valid_dynamic_config().sites[0].clone()
+        }];
+        let dynamic = valid_dynamic_config();
+        let result = validate(&config, &dynamic, false);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::AcmeContactInvalid { .. })));
+    }
+
+    #[test]
+    fn rule19_acme_contact_not_mailto() {
+        let mut config = valid_static_config();
+        config.listeners[0].tls = TlsConfig {
+            mode: "acme".to_string(),
+            acme_domains: vec!["test.local".to_string()],
+            acme_cache_dir: "/tmp/cache".to_string(),
+            acme_directory: "production".to_string(),
+            acme_contact: "admin@example.com".to_string(),
+            cert_path: String::new(),
+            key_path: String::new(),
+        };
+        config.listeners[0].sites = vec![SiteConfig {
+            host: "test.local".to_string(),
+            upstream: "127.0.0.1:8080".to_string(),
+            ..valid_dynamic_config().sites[0].clone()
+        }];
+        let dynamic = valid_dynamic_config();
+        let result = validate(&config, &dynamic, false);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::AcmeContactInvalid { .. })));
+    }
+
+    #[test]
+    fn rule19_acme_contact_valid_mailto() {
+        let mut config = valid_static_config();
+        config.listeners[0].tls = TlsConfig {
+            mode: "acme".to_string(),
+            acme_domains: vec!["test.local".to_string()],
+            acme_cache_dir: "/tmp/cache".to_string(),
+            acme_directory: "production".to_string(),
+            acme_contact: "mailto:admin@example.com".to_string(),
+            cert_path: String::new(),
+            key_path: String::new(),
+        };
+        config.listeners[0].sites = vec![SiteConfig {
+            host: "test.local".to_string(),
+            upstream: "127.0.0.1:8080".to_string(),
+            ..valid_dynamic_config().sites[0].clone()
+        }];
+        let dynamic = valid_dynamic_config();
+        let result = validate(&config, &dynamic, false);
+        assert!(result.is_ok());
     }
 
     #[test]

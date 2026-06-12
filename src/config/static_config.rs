@@ -62,6 +62,8 @@ pub struct TlsConfig {
     #[serde(default = "default_acme_directory")]
     pub acme_directory: String,
     #[serde(default)]
+    pub acme_contact: String,
+    #[serde(default)]
     pub cert_path: String,
     #[serde(default)]
     pub key_path: String,
