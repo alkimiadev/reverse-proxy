@@ -1,7 +1,7 @@
 ---
 id: fix/log-root-cert-count
 name: Log system root certificate count at startup (S3)
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial

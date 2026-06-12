@@ -1,7 +1,7 @@
 ---
 id: fix/http-port-type-u16
 name: Change http_port type from u32 to u16 per spec (W12)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
