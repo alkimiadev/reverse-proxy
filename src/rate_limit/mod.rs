@@ -102,12 +102,20 @@ pub fn start_eviction_task(
     limiter: Arc<RateLimiter>,
     interval: Duration,
     max_age: Duration,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval_timer = tokio::time::interval(interval);
         loop {
-            interval_timer.tick().await;
-            limiter.evict_stale(max_age);
+            tokio::select! {
+                _ = interval_timer.tick() => {
+                    limiter.evict_stale(max_age);
+                }
+                _ = shutdown_rx.changed() => {
+                    tracing::info!("rate limiter eviction task shutting down");
+                    break;
+                }
+            }
         }
     })
 }
