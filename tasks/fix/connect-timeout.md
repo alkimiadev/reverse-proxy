@@ -1,7 +1,7 @@
 ---
 id: fix/connect-timeout
 name: Wire upstream_connect_timeout_secs to enforce separate connect timeout
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: medium
