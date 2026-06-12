@@ -92,8 +92,10 @@ pub async fn serve_https_listener(
                         .serve_connection_with_upgrades(io, svc)
                         .await
                     {
-                        if e.to_string().contains("incomplete message") {
-                            return;
+                        if let Some(hyper_err) = e.downcast_ref::<hyper::Error>() {
+                            if hyper_err.is_incomplete_message() {
+                                return;
+                            }
                         }
                         error!(error = %e, "HTTPS connection error");
                     }
