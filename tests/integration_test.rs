@@ -511,6 +511,7 @@ https_port = 443
 mode = "acme"
 acme_domains = ["test.local"]
 acme_cache_dir = "/tmp/acme-cache"
+acme_contact = "mailto:admin@test.local"
 
 [[listeners.sites]]
 host = "test.local"
@@ -818,6 +819,7 @@ https_port = 443
 mode = "acme"
 acme_domains = ["test.local"]
 acme_cache_dir = "/tmp/acme-cache"
+acme_contact = "mailto:admin@test.local"
 acme_directory = "staging"
 
 [[listeners.sites]]

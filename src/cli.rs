@@ -274,6 +274,7 @@ https_port = 443
 mode = "acme"
 acme_domains = ["test.local"]
 acme_cache_dir = "/tmp/acme"
+acme_contact = "mailto:admin@test.local"
 "#;
         let config_path = dir.path().join("config.toml");
         std::fs::write(&config_path, toml).unwrap();
@@ -311,6 +312,7 @@ https_port = 443
 mode = "acme"
 acme_domains = ["test.local"]
 acme_cache_dir = "/tmp/acme"
+acme_contact = "mailto:admin@test.local"
 "#;
         let config_path = dir.path().join("config.toml");
         std::fs::write(&config_path, toml).unwrap();
@@ -367,6 +369,7 @@ https_port = 443
 mode = "acme"
 acme_domains = ["test.local"]
 acme_cache_dir = "/tmp/acme"
+acme_contact = "mailto:admin@test.local"
 "#;
         let config_path = dir.path().join("config.toml");
         std::fs::write(&config_path, toml).unwrap();

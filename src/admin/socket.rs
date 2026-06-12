@@ -422,6 +422,7 @@ mode = "acme"
 acme_domains = ["test.local"]
 acme_cache_dir = "/tmp/acme-cache"
 acme_directory = "staging"
+acme_contact = "mailto:admin@test.local"
 
 [[listeners.sites]]
 host = "test.local"
@@ -563,6 +564,7 @@ mode = "acme"
 acme_domains = ["test.local"]
 acme_cache_dir = "/tmp/acme-cache"
 acme_directory = "staging"
+acme_contact = "mailto:admin@test.local"
 
 [[listeners.sites]]
 host = "test.local"
