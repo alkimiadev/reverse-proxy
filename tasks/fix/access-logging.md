@@ -1,7 +1,7 @@
 ---
 id: fix/access-logging
 name: Wire up request access logging in the proxy handler
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: medium

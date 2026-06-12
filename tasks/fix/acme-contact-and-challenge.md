@@ -1,7 +1,7 @@
 ---
 id: fix/acme-contact-and-challenge
 name: Fix ACME contact email wiring and remove unused challenge config
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: high

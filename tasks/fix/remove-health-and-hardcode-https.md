@@ -1,7 +1,7 @@
 ---
 id: fix/remove-health-and-hardcode-https
 name: Remove /health from main listener and hardcode X-Forwarded-Proto to https
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
