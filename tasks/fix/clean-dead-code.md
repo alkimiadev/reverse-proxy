@@ -1,7 +1,7 @@
 ---
 id: fix/clean-dead-code
 name: Remove dead_code annotations and add #[non_exhaustive] to public enums
-status: pending
+status: completed
 depends_on: [fix/acme-contact-and-challenge]
 scope: narrow
 risk: low
