@@ -1,7 +1,7 @@
 ---
 id: fix/graceful-shutdown
 name: Fix shutdown to drain listeners and stop background tasks cleanly
-status: pending
+status: completed
 depends_on: []
 scope: moderate
 risk: medium
