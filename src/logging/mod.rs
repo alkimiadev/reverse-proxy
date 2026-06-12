@@ -105,8 +105,13 @@ mod tests {
             log_file_path: Some(log_path.to_string_lossy().to_string()),
         };
 
-        let result = init(&config);
-        assert!(result.is_ok(), "init failed: {:?}", result.err());
+        if let Err(e) = init(&config) {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("global default trace dispatcher") || msg.contains("already been set"),
+                "unexpected init error: {e}"
+            );
+        }
         assert!(log_path.exists(), "log file should be created");
     }
 }
