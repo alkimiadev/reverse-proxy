@@ -68,6 +68,7 @@ impl AdminSocket {
         }
     }
 
+    #[cfg(test)]
     pub fn reload_mutex(&self) -> Arc<Mutex<()>> {
         self.reload_mutex.clone()
     }
