@@ -1,7 +1,7 @@
 ---
 id: review/post-security-fix-review
 name: Review security fix implementations before production consideration
-status: pending
+status: completed
 depends_on:
   - fix/rate-limiter-ip-source
   - fix/inflight-counter-increment
