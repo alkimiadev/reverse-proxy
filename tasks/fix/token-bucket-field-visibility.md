@@ -1,7 +1,7 @@
 ---
 id: fix/token-bucket-field-visibility
 name: Make TokenBucket fields private except last_access (W10, S6)
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial
