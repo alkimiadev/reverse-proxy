@@ -3,9 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::config::dynamic_config::{
-    BodyConfig, DynamicConfig, RateLimitConfig, SerializableDynamicConfig,
-};
+use crate::config::dynamic_config::DynamicConfig;
 use crate::config::static_config::StaticConfig;
 use crate::config::validation::validate;
 
@@ -46,48 +44,15 @@ where
     Cli::parse_from(args)
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct RawConfig {
-    #[serde(default)]
-    listeners: Vec<crate::config::static_config::ListenerConfig>,
-    #[serde(default)]
-    allow_wildcard_bind: bool,
-    #[serde(default = "crate::config::static_config::default_health_check_port")]
-    health_check_port: u16,
-    #[serde(default = "crate::config::static_config::default_admin_socket_path")]
-    admin_socket_path: String,
-    #[serde(default = "crate::config::static_config::default_shutdown_timeout_secs")]
-    shutdown_timeout_secs: u64,
-    #[serde(default)]
-    logging: crate::config::static_config::LoggingConfig,
-    rate_limit: RateLimitConfig,
-    body: BodyConfig,
-}
-
 pub fn load_config(cli: &Cli) -> Result<LoadedConfig> {
     let config_path = Path::new(&cli.config);
     let config_content = std::fs::read_to_string(config_path)
         .with_context(|| format!("failed to read config file: {}", cli.config))?;
 
-    let raw: RawConfig = toml::from_str(&config_content)
+    let full_config = crate::config::FullConfig::parse(&config_content)
         .with_context(|| format!("failed to parse config file: {}", cli.config))?;
 
-    let static_config = StaticConfig {
-        listeners: raw.listeners,
-        allow_wildcard_bind: raw.allow_wildcard_bind,
-        health_check_port: raw.health_check_port,
-        admin_socket_path: raw.admin_socket_path,
-        shutdown_timeout_secs: raw.shutdown_timeout_secs,
-        logging: raw.logging,
-    };
-
-    let serializable_dynamic = SerializableDynamicConfig {
-        sites: collect_sites(&static_config),
-        rate_limit: raw.rate_limit,
-        body: raw.body,
-    };
-
-    let dynamic_config: DynamicConfig = serializable_dynamic.into();
+    let (static_config, dynamic_config) = full_config.into_static_and_dynamic();
 
     let allow_wildcard_bind = static_config.allow_wildcard_bind || cli.allow_wildcard_bind;
 
@@ -107,14 +72,6 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig> {
         dynamic_config,
         allow_wildcard_bind,
     })
-}
-
-fn collect_sites(static_config: &StaticConfig) -> Vec<crate::config::dynamic_config::SiteConfig> {
-    let mut sites = Vec::new();
-    for listener in &static_config.listeners {
-        sites.extend(listener.sites.clone());
-    }
-    sites
 }
 
 pub fn run_validate(cli: &Cli) -> Result<()> {
