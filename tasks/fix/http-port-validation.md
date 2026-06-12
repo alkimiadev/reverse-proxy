@@ -1,7 +1,7 @@
 ---
 id: fix/http-port-validation
 name: Add http_port range validation (0 or 1-65535)
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial
