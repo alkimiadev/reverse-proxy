@@ -80,23 +80,23 @@ async fn proxy_handler(
         }
     };
 
+    let connect_timeout = Duration::from_secs(site.upstream_connect_timeout_secs);
     let request_timeout = Duration::from_secs(site.upstream_request_timeout_secs);
-    // The timeout covers the entire HTTP round-trip including response body
-    // streaming. For large file downloads or slow upstreams, this means the
-    // timeout kills the response even if the upstream is actively sending data.
-    // A more precise timeout would apply only to connect + first-byte, then
-    // stream the body without a timeout. The `upstream_connect_timeout_secs`
-    // field in SiteConfig exists for a separate connect timeout (see W4).
-    // For Phase 1, this full-request timeout is acceptable.
 
     let result = if upstream_scheme == "https" {
-        tokio::time::timeout(request_timeout, state.https_client.request(upstream_req)).await
+        tokio::time::timeout(request_timeout, async {
+            tokio::time::timeout(connect_timeout, state.https_client.request(upstream_req)).await
+        })
+        .await
     } else {
-        tokio::time::timeout(request_timeout, state.http_client.request(upstream_req)).await
+        tokio::time::timeout(request_timeout, async {
+            tokio::time::timeout(connect_timeout, state.http_client.request(upstream_req)).await
+        })
+        .await
     };
 
     match result {
-        Ok(Ok(upstream_resp)) => {
+        Ok(Ok(Ok(upstream_resp))) => {
             let status = upstream_resp.status().as_u16();
             let duration_ms = start.elapsed().as_millis() as u64;
             log_request!(
@@ -114,7 +114,7 @@ async fn proxy_handler(
             let body = Body::new(body);
             Response::from_parts(parts, body)
         }
-        Ok(Err(e)) => {
+        Ok(Ok(Err(e))) => {
             let duration_ms = start.elapsed().as_millis() as u64;
             if e.is_connect() {
                 log_upstream_error!(&host_owned, &upstream_addr, &format!("{}", e));
@@ -147,6 +147,21 @@ async fn proxy_handler(
                 );
                 resp
             }
+        }
+        Ok(Err(_)) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            log_upstream_error!(&host_owned, &upstream_addr, "upstream connect timeout");
+            let resp = ProxyError::UpstreamTimeout.into_response();
+            log_request!(
+                &client_ip,
+                &host_owned,
+                &method,
+                &path,
+                504u16,
+                &upstream,
+                duration_ms
+            );
+            resp
         }
         Err(_) => {
             let duration_ms = start.elapsed().as_millis() as u64;
@@ -192,13 +207,21 @@ fn build_upstream_request(req: Request<Body>, upstream_uri: &Uri) -> anyhow::Res
     builder.body(req.into_body()).map_err(Into::into)
 }
 
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 5;
+
 pub fn create_http_client() -> Client<HttpConnector, Body> {
+    let mut connector = HttpConnector::new();
+    connector.set_connect_timeout(Some(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS)));
     Client::builder(TokioExecutor::new())
         .pool_idle_timeout(Duration::from_secs(90))
-        .build_http()
+        .build(connector)
 }
 
 pub fn create_https_client() -> Client<hyper_rustls::HttpsConnector<HttpConnector>, Body> {
+    let mut http_connector = HttpConnector::new();
+    http_connector.set_connect_timeout(Some(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS)));
+    http_connector.enforce_http(false);
+
     let tls_config = rustls::ClientConfig::builder()
         .with_root_certificates(root_certs())
         .with_no_client_auth();
@@ -207,7 +230,7 @@ pub fn create_https_client() -> Client<hyper_rustls::HttpsConnector<HttpConnecto
         .with_tls_config(tls_config)
         .https_or_http()
         .enable_http1()
-        .build();
+        .wrap_connector(http_connector);
 
     Client::builder(TokioExecutor::new())
         .pool_idle_timeout(Duration::from_secs(90))
