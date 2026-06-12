@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use axum::body::Body;
@@ -14,6 +15,8 @@ use hyper_util::rt::TokioExecutor;
 use tracing::warn;
 
 use crate::config::dynamic_config::DynamicConfig;
+use crate::log_request;
+use crate::log_upstream_error;
 use crate::proxy::error::ProxyError;
 use crate::proxy::headers::{inject_proxy_headers, remove_hop_by_hop};
 
@@ -28,6 +31,11 @@ async fn proxy_handler(
     State(state): State<Arc<ProxyState>>,
     mut req: Request<Body>,
 ) -> Response {
+    let start = Instant::now();
+
+    let client_ip = remote_addr.ip().to_string();
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
     let host = req
         .headers()
         .get(axum::http::header::HOST)
@@ -50,12 +58,24 @@ async fn proxy_handler(
 
     let upstream_scheme = site.upstream_scheme.clone();
     let upstream = site.upstream.clone();
+    let upstream_addr = format!("{}://{}", upstream_scheme, upstream);
     let upstream_uri = build_upstream_uri(&upstream_scheme, &upstream, req.uri());
 
     let upstream_req = match build_upstream_request(req, &upstream_uri) {
         Ok(r) => r,
         Err(e) => {
             warn!(error = %e, "failed to build upstream request");
+            log_upstream_error!(&host_owned, &upstream_addr, &format!("{}", e));
+            let duration_ms = start.elapsed().as_millis() as u64;
+            log_request!(
+                &client_ip,
+                &host_owned,
+                &method,
+                &path,
+                502u16,
+                &upstream,
+                duration_ms
+            );
             return StatusCode::BAD_GATEWAY.into_response();
         }
     };
@@ -70,6 +90,17 @@ async fn proxy_handler(
 
     match result {
         Ok(Ok(upstream_resp)) => {
+            let status = upstream_resp.status().as_u16();
+            let duration_ms = start.elapsed().as_millis() as u64;
+            log_request!(
+                &client_ip,
+                &host_owned,
+                &method,
+                &path,
+                status,
+                &upstream,
+                duration_ms
+            );
             let (mut parts, body) = upstream_resp.into_parts();
             remove_hop_by_hop(&mut parts.headers);
             parts.headers.remove("server");
@@ -77,18 +108,54 @@ async fn proxy_handler(
             Response::from_parts(parts, body)
         }
         Ok(Err(e)) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
             if e.is_connect() {
-                ProxyError::UpstreamConnection(e).into_response()
+                log_upstream_error!(&host_owned, &upstream_addr, &format!("{}", e));
+                let resp = ProxyError::UpstreamConnection(e).into_response();
+                log_request!(
+                    &client_ip,
+                    &host_owned,
+                    &method,
+                    &path,
+                    502u16,
+                    &upstream,
+                    duration_ms
+                );
+                resp
             } else {
-                let upstream_addr = format!("{}://{}", upstream_scheme, upstream);
-                ProxyError::BadGateway {
-                    host: host_owned,
-                    upstream: upstream_addr,
+                log_upstream_error!(&host_owned, &upstream_addr, "bad gateway");
+                let resp = ProxyError::BadGateway {
+                    host: host_owned.clone(),
+                    upstream: upstream_addr.clone(),
                 }
-                .into_response()
+                .into_response();
+                log_request!(
+                    &client_ip,
+                    &host_owned,
+                    &method,
+                    &path,
+                    502u16,
+                    &upstream,
+                    duration_ms
+                );
+                resp
             }
         }
-        Err(_) => ProxyError::UpstreamTimeout.into_response(),
+        Err(_) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            log_upstream_error!(&host_owned, &upstream_addr, "upstream timeout");
+            let resp = ProxyError::UpstreamTimeout.into_response();
+            log_request!(
+                &client_ip,
+                &host_owned,
+                &method,
+                &path,
+                504u16,
+                &upstream,
+                duration_ms
+            );
+            resp
+        }
     }
 }
 
