@@ -87,13 +87,16 @@ async fn test_health_check_disabled_when_port_zero() {
     handle.abort();
 }
 
-fn make_rate_limit_app(limiter: Arc<reverse_proxy::rate_limit::RateLimiter>) -> Router {
+fn make_rate_limit_app(
+    limiter: Arc<reverse_proxy::rate_limit::RateLimiter>,
+) -> axum::extract::connect_info::IntoMakeServiceWithConnectInfo<Router, std::net::SocketAddr> {
     Router::new()
         .route("/", get(|| async { "ok" }))
         .layer(axum::middleware::from_fn_with_state(
             limiter,
             reverse_proxy::rate_limit::rate_limit_middleware,
         ))
+        .into_make_service_with_connect_info::<std::net::SocketAddr>()
 }
 
 #[tokio::test]
@@ -116,7 +119,6 @@ async fn test_rate_limit_allows_within_burst() {
     for _ in 0..5 {
         let resp = client
             .get(format!("http://127.0.0.1:{}/", addr.port()))
-            .header("x-forwarded-for", "192.168.1.1")
             .send()
             .await
             .unwrap();
@@ -144,7 +146,6 @@ async fn test_rate_limit_rejects_above_burst() {
     for _ in 0..2 {
         let resp = client
             .get(format!("http://127.0.0.1:{}/", addr.port()))
-            .header("x-forwarded-for", "10.0.0.50")
             .send()
             .await
             .unwrap();
@@ -153,7 +154,6 @@ async fn test_rate_limit_rejects_above_burst() {
 
     let resp = client
         .get(format!("http://127.0.0.1:{}/", addr.port()))
-        .header("x-forwarded-for", "10.0.0.50")
         .send()
         .await
         .unwrap();
@@ -181,7 +181,6 @@ async fn test_rate_limit_429_response_body() {
     let client = reqwest::Client::new();
     let resp = client
         .get(format!("http://127.0.0.1:{}/", addr.port()))
-        .header("x-forwarded-for", "203.0.113.50")
         .send()
         .await
         .unwrap();
@@ -189,7 +188,6 @@ async fn test_rate_limit_429_response_body() {
 
     let resp = client
         .get(format!("http://127.0.0.1:{}/", addr.port()))
-        .header("x-forwarded-for", "203.0.113.50")
         .send()
         .await
         .unwrap();
@@ -217,7 +215,6 @@ async fn test_rate_limit_per_ip_independent() {
     let client = reqwest::Client::new();
     let resp = client
         .get(format!("http://127.0.0.1:{}/", addr.port()))
-        .header("x-forwarded-for", "192.168.1.1")
         .send()
         .await
         .unwrap();
@@ -225,11 +222,10 @@ async fn test_rate_limit_per_ip_independent() {
 
     let resp2 = client
         .get(format!("http://127.0.0.1:{}/", addr.port()))
-        .header("x-forwarded-for", "192.168.1.2")
         .send()
         .await
         .unwrap();
-    assert_eq!(resp2.status(), reqwest::StatusCode::OK);
+    assert_eq!(resp2.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]
