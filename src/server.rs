@@ -20,6 +20,13 @@ pub struct InFlightCounter {
 
 struct InFlightGuard(Arc<InFlightCounter>);
 
+impl InFlightGuard {
+    fn new(counter: Arc<InFlightCounter>) -> Self {
+        counter.increment();
+        Self(counter)
+    }
+}
+
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
         self.0.decrement();
@@ -71,7 +78,7 @@ pub async fn serve_https_listener(
                 let in_flight = in_flight.clone();
 
                 tokio::spawn(async move {
-                    let _guard = InFlightGuard(in_flight.clone());
+                    let _guard = InFlightGuard::new(in_flight.clone());
 
                     let tls_stream = match tls_acceptor.accept(tcp_stream).await {
                         Ok(stream) => stream,
@@ -142,7 +149,7 @@ pub async fn drain_in_flight(
         if start.elapsed() >= timeout {
             return in_flight.count.load(Ordering::SeqCst);
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
 
