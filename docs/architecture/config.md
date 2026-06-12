@@ -87,7 +87,7 @@ Immutable after startup. Changes require a process restart.
 |-------|------|-------------|
 | `listeners` | `Vec<ListenerConfig>` | Independent TLS endpoints, each with its own bind address and TLS config (see ADR-019) |
 | `allow_wildcard_bind` | `bool` | Allow `0.0.0.0` as a bind address. Required for container deployments. Default: `false` (see ADR-016, ADR-020) |
-| `health_check_port` | `u16` | Port for local health check endpoint (default: `9900`; set to `0` to disable; see ADR-013) |
+| `health_check_port` | `u16` | Port for local health check endpoint (default: `9900`; set to `0` to disable; bound to `127.0.0.1` only; see ADR-013, ADR-022) |
 | `admin_socket_path` | `String` | Unix domain socket path for admin API (default: `/run/reverse-proxy/admin.sock`; empty string to disable; see ADR-014) |
 | `shutdown_timeout_secs` | `u64` | Maximum seconds to wait for in-flight requests during graceful shutdown (default: `30`) |
 | `logging` | `LoggingConfig` | Logging configuration (see below) |

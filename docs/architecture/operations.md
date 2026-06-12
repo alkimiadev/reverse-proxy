@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-11
+last_updated: 2026-06-12
 ---
 
 # Operations
@@ -109,8 +109,7 @@ log entries:
 1. **Access logs**: Every proxied request is logged at `info` level with
    structured fields. Access logging is **always-on** — it is the primary
    observability mechanism for the proxy and is required for fail2ban
-   integration. There is no configuration option to disable access logging
-   (see OQ-12).
+   integration. There is no configuration option to disable access logging.
 
 ```
 REQUEST client_ip=203.0.113.50 host=git.alk.dev method=GET path=/user/repo status=200 upstream=127.0.0.1:3000 duration_ms=45
@@ -172,33 +171,36 @@ Configurable via `log_level` in StaticConfig.
 
 ### Local Health Check Port
 
-The primary health check endpoint is served on a separate local port (default:
-9900), bound to `127.0.0.1` only. This ensures health checks work even when TLS
-is misconfigured. See ADR-013 for the rationale.
+The health check endpoint is served on a separate local port (default: 9900),
+bound to `127.0.0.1` only. It is not served on the main HTTPS listener —
+health checking is an operational concern that does not belong on the
+public-facing proxy. See ADR-013 and ADR-022.
 
 ```
 GET http://127.0.0.1:9900/health → 200 OK (empty body)
 ```
 
 The port is configurable via `health_check_port` in StaticConfig. Setting it
-to `0` disables the separate health check listener.
+to `0` disables the health check listener entirely.
 
-### HTTPS Health Check (Fallback)
+The admin socket's `status` command provides an additional health/status
+mechanism that returns process information:
 
-When the local health check port is enabled, `/health` is also available on the
-main HTTPS listener for cases where TLS-level health verification is desired.
-External monitoring should prefer the local health check for liveness checks
-and can use the HTTPS endpoint for TLS verification.
+```
+{"status": "ok", "uptime_secs": 1234, "sites": 2}
+```
 
 ### What It Checks
 
 - Process is running and the tokio runtime is responsive
-- TLS listener is accepting connections (HTTPS endpoint only)
 - Config is loaded (StaticConfig and DynamicConfig are initialized)
 
 It does **not** check upstream reachability. The health check answers "is the
 proxy process healthy?", not "is the upstream reachable?" — upstream health is
 a separate concern that would produce 502/504 responses in the proxy handler.
+
+It also does **not** verify TLS configuration — that is the responsibility of
+external monitoring tools that connect to the public HTTPS port directly.
 
 ### Future Extensions
 
@@ -511,6 +513,7 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 ```
 
 No port publishing is needed — the health check runs inside the container.
+There is no `/health` route on the main HTTPS listener.
 
 ### SSH Traffic
 
@@ -580,8 +583,14 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 
 ## Open Questions
 
-Open questions are tracked in [open-questions.md](open-questions.md). Key
-questions affecting this document:
+Open questions are tracked in [open-questions.md](open-questions.md). All
+questions affecting this document have been resolved:
 
 - ~~**OQ-03**: Should the health check endpoint be on a separate port?~~ (resolved
   — ADR-013: separate local port, default 9900, localhost only)
+- ~~**OQ-08**: Should `/health` use a less common path?~~ (resolved — ADR-022:
+  no `/health` route on the main listener at all; health checking is via port
+  9900 and admin socket only)
+- ~~**OQ-12**: Should request access logging be mandatory or optional?~~ (resolved
+  — access logging is mandatory and always-on at `info` level; no configuration
+  option to disable it)

@@ -7,21 +7,23 @@ Accepted
 ## Context
 
 The health check endpoint (`/health`) needs to be accessible for monitoring
-without requiring TLS. Currently the design places it on the main HTTPS
-listener, which means:
+without requiring TLS. Serving it on the main HTTPS listener would mean:
 
 1. TLS handshake must succeed for the health check to respond
 2. External monitoring tools need to handle TLS
 3. A TLS configuration error would make the health check unreachable, creating
    a false-negative monitoring signal
+4. It creates collision with upstream applications that use `/health` for their
+   own health checks (see ADR-022)
 
 Three options were considered (see OQ-03):
 
-1. **Main HTTPS listener only**: Simplest, but TLS config errors make health
-   checks unreachable
-2. **Separate unencrypted port on localhost**: Simple, works with standard
-   monitoring tools, but health checks bypass TLS
+1. **Separate unencrypted port on localhost (chosen)**: Simple, works with
+   standard monitoring tools, health checks work even when TLS is misconfigured
+2. **Main HTTPS listener only**: Would require TLS for health checks, creating
+   a circular dependency — TLS config errors would make health checks unreachable
 3. **Admin port with its own listener**: Most flexible but adds complexity
+   beyond what's needed for a simple health check
 
 ## Decision
 
@@ -31,8 +33,8 @@ HTTP and HTTPS listeners.
 
 The port is configurable via `health_check_port` in StaticConfig. The default
 value is `9900` (enabled, localhost only). Setting it to `0` disables the
-separate health check listener, and `/health` remains available on the main
-HTTPS listener as a fallback.
+health check listener entirely — there is no `/health` route on the main HTTPS
+listener (see ADR-022).
 
 ## Rationale
 
@@ -45,8 +47,9 @@ HTTPS listener as a fallback.
   the same host) can reach it
 - Configurable port allows different deployment scenarios (some monitoring runs
   on different ports)
-- Disabling via `health_check_port = 0` keeps the main HTTPS `/health` endpoint
-  available for cases where a separate port isn't needed
+- Disabling via `health_check_port = 0` removes the health check entirely —
+  the admin socket's `status` command remains available as an alternative
+  health/status mechanism
 - When this project is folded into alknet, the health check will use alknet's
   existing patterns, making the separate port unnecessary in that context
 
@@ -61,10 +64,9 @@ HTTPS listener as a fallback.
 
 **Negative:**
 - Additional listener to manage (minimal complexity)
-- Two health check endpoints exist when the separate port is enabled (the
-  local one and the HTTPS one) — monitoring should prefer the local one
 
 ## References
 
 - [operations.md](../operations.md)
+- [ADR-022](022-health-check-scope.md) — Health check scope (no `/health` on main listener)
 - OQ-03 (now resolved)

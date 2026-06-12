@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-11
+last_updated: 2026-06-12
 ---
 
 # Reverse Proxy — Architecture
@@ -53,6 +53,7 @@ certificate via ACME.
 | [019](decisions/019-multi-config-listeners.md) | Multi-Config Listener Support | Accepted |
 | [020](decisions/020-container-deployment.md) | Container Deployment Model | Accepted |
 | [021](decisions/021-x-forwarded-for-edge-proxy.md) | X-Forwarded-For Edge Proxy Model | Accepted |
+| [022](decisions/022-health-check-scope.md) | Health Check Scope — Local Port and Admin Socket Only | Accepted |
 
 ## Open Questions
 
@@ -67,11 +68,11 @@ See [open-questions.md](open-questions.md) for the full tracker.
 | ~~OQ-05~~ | ~~Should the proxy bind to multiple addresses?~~ | ~~low~~ | **resolved** (single bind_addr sufficient) |
 | ~~OQ-06~~ | ~~Should upstream timeouts be configurable per-site?~~ | ~~low~~ | **resolved** (ADR-015) |
 | ~~OQ-07~~ | ~~Should per-site TLS overrides be supported for mixed ACME/manual domains?~~ | ~~low~~ | **resolved** (ADR-019) |
-| OQ-08 | Should the `/health` path use a less common endpoint to avoid upstream collision? | medium | open |
-| OQ-09 | How should `upstream_connect_timeout_secs` be enforced? | medium | open |
-| OQ-10 | Should ACME contact email be a required config field? | high | open |
-| OQ-11 | How should `X-Forwarded-Proto` be derived per-listener? | medium | open |
-| OQ-12 | Should request access logging be mandatory or optional? | high | open |
+| ~~OQ-08~~ | ~~Should `/health` use a less common path to avoid upstream collision?~~ | ~~medium~~ | **resolved** (ADR-022: no `/health` route on main listener) |
+| ~~OQ-09~~ | ~~How should `upstream_connect_timeout_secs` be enforced?~~ | ~~medium~~ | **resolved** (implementation gap — ADR-015 already decides this) |
+| ~~OQ-10~~ | ~~Should ACME contact email be a required config field?~~ | ~~high~~ | **resolved** (already specified in config.md; implementation bug C2) |
+| ~~OQ-11~~ | ~~How should `X-Forwarded-Proto` be derived per-listener?~~ | ~~medium~~ | **resolved** (hardcoded `https` is correct for TLS-terminating proxy) |
+| ~~OQ-12~~ | ~~Should request access logging be mandatory or optional?~~ | ~~high~~ | **resolved** (mandatory, always-on per operations.md) |
 
 ## Document Lifecycle
 

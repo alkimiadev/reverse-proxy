@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-11
+last_updated: 2026-06-12
 ---
 
 # Proxy Handler
@@ -26,7 +26,7 @@ Incoming HTTPS request
         ▼
 ┌─────────────────┐
 │  axum Router     │
-│  (Host-based)    │─── /health → 200 OK
+│  (Host-based)    │
 │                  │
 │  match Host      │
 │  header on       │
@@ -91,15 +91,11 @@ matching. Site `host` values must not include ports.
 The proxy does not filter or restrict paths. All paths and query strings on a
 known host are forwarded to the upstream without modification.
 
-The `/health` path is a special case: it matches regardless of the `Host`
-header and is evaluated before host-based routing. A `GET /health` request on
-any hostname returns `200 OK` with an empty body.
-
-**Note**: This means any upstream application that uses `/health` for its own
-health checks will have those requests silently intercepted by the proxy and
-will never reach the upstream. If this is a concern, the health check path
-should be changed to a less common path (e.g., `/__health` or `/healthz`) or
-made configurable. See OQ-08.
+The proxy does **not** serve a `/health` route on the main listener. Health
+checking is an operational concern handled by the dedicated local health check
+port (default: 9900, bound to `127.0.0.1` only) and the admin socket's `status`
+command — not by intercepting traffic on the public-facing proxy. See ADR-013
+and ADR-022.
 
 ### 2. Proxy Header Injection
 
@@ -260,8 +256,11 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 
 ## Open Questions
 
-Open questions are tracked in [open-questions.md](open-questions.md). Key
-questions affecting this document:
+Open questions are tracked in [open-questions.md](open-questions.md). All
+questions affecting this document have been resolved:
 
 - ~~**OQ-06**: Should upstream timeouts be configurable per-site?~~ (resolved —
   ADR-015: per-site timeout overrides with defaults)
+- ~~**OQ-08**: Should the `/health` path use a less common endpoint to avoid
+  upstream collision?~~ (resolved — ADR-022: no `/health` route on the main
+  listener; health checking is via port 9900 and admin socket only)

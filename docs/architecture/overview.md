@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-11
+last_updated: 2026-06-12
 ---
 
 # Overview
@@ -86,34 +86,32 @@ details.
  config.toml ───────► │  StaticConfig + DynamicConfig       │
  (volume mount)       │  (ArcSwap for hot-reload)            │
                       │                                      │
-                       │  ┌─ Listener 1 ─────────────────┐   │
-  bind_addr:80  ────►  │  │  HTTP → 301 redirect           │   │
-  (published)          │  └────────────────────────────────┘   │
-                       │                                      │
-  bind_addr:443 ────►  │  │  TLS listener (tokio-rustls)    │   │
-  (published)          │  │  ├─ ACME or Manual TLS config    │   │
-                       │  │  └─ axum router (per-listener)   │   │
-                       │  │     ├─ /health → 200 OK (any)    │   │
-                       │  │     ├─ Host → global site lookup  │   │
-                       │  │     ├─ git.alk.dev → gitea:3000  │   │
-                       │  │     └─ Rate limiting, headers     │   │
-                       │  └────────────────────────────────┘   │
-                       │                                      │
-                       │  ┌─ Listener N ─────────────────┐   │
-  bind_addr_N:80  ───► │  │  HTTP → 301 redirect           │   │
-                       │  └────────────────────────────────┘   │
-                       │                                      │
-  bind_addr_N:443 ───► │  │  TLS listener (tokio-rustls)    │   │
-                       │  │  ├─ Manual TLS cert             │   │
-                       │  │  └─ axum router (per-listener)   │   │
-                       │  │     ├─ /health → 200 OK (any)    │   │
-                       │  │     ├─ Host → global site lookup  │   │
-                       │  │     ├─ alk.dev → app:8080       │   │
-                       │  │     └─ Rate limiting, headers     │   │
-                       │  └────────────────────────────────┘   │
-                       │                                      │
-                       │  /health → 200 OK (port 9900)        │
-                       │  Admin socket (Unix domain)           │
+                        │  ┌─ Listener 1 ─────────────────┐   │
+   bind_addr:80  ────►  │  │  HTTP → 301 redirect           │   │
+   (published)          │  └────────────────────────────────┘   │
+                        │                                      │
+   bind_addr:443 ────►  │  │  TLS listener (tokio-rustls)    │   │
+   (published)          │  │  ├─ ACME or Manual TLS config    │   │
+                        │  │  └─ axum router (per-listener)   │   │
+                        │  │     ├─ Host → global site lookup  │   │
+                        │  │     ├─ git.alk.dev → gitea:3000  │   │
+                        │  │     └─ Rate limiting, headers     │   │
+                        │  └────────────────────────────────┘   │
+                        │                                      │
+                        │  ┌─ Listener N ─────────────────┐   │
+   bind_addr_N:80  ───► │  │  HTTP → 301 redirect           │   │
+                        │  └────────────────────────────────┘   │
+                        │                                      │
+   bind_addr_N:443 ───► │  │  TLS listener (tokio-rustls)    │   │
+                        │  │  ├─ Manual TLS cert             │   │
+                        │  │  └─ axum router (per-listener)   │   │
+                        │  │     ├─ Host → global site lookup  │   │
+                        │  │     ├─ alk.dev → app:8080       │   │
+                        │  │     └─ Rate limiting, headers     │   │
+                        │  └────────────────────────────────┘   │
+                        │                                      │
+                        │  /health → 200 OK (port 9900)        │
+                        │  Admin socket (Unix domain)           │
                        └────────────────────────────────────┘
                             │              │
                      ┌──────┘              └──────┐
@@ -211,9 +209,11 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 
 ## Open Questions
 
-Open questions are tracked in [open-questions.md](open-questions.md). Key
-questions affecting this document:
+Open questions are tracked in [open-questions.md](open-questions.md). All
+questions affecting this document have been resolved:
 
 - ~~**OQ-01**: Should cipher suites be restricted beyond rustls defaults?~~ (resolved — ADR-012)
 - ~~**OQ-03**: Should the health check endpoint be on a separate port?~~ (resolved — ADR-013)
+- ~~**OQ-05**: Should the proxy bind to multiple addresses?~~ (resolved — single `bind_addr` per listener)
 - ~~**OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual domains?~~ (resolved — ADR-019: `[[listeners]]` with per-listener TLS config)
+- ~~**OQ-08**: Should `/health` use a less common path?~~ (resolved — ADR-022: no `/health` route on main listener; health check is port 9900/admin socket only)
