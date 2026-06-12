@@ -33,7 +33,7 @@ pub fn default_shutdown_timeout_secs() -> u64 {
 pub struct ListenerConfig {
     pub bind_addr: String,
     #[serde(default = "default_http_port")]
-    pub http_port: u16,
+    pub http_port: u32,
     #[serde(default = "default_https_port")]
     pub https_port: u16,
     pub tls: TlsConfig,
@@ -42,7 +42,7 @@ pub struct ListenerConfig {
 }
 
 #[allow(dead_code)]
-fn default_http_port() -> u16 {
+fn default_http_port() -> u32 {
     80
 }
 
