@@ -150,6 +150,13 @@ pub fn validate(
                     errors.push(ValidationError::AcmeContactInvalid {
                         bind_addr: listener.bind_addr.clone(),
                     });
+                } else {
+                    let email = &contact[7..];
+                    if email.is_empty() || !email.contains('@') {
+                        errors.push(ValidationError::AcmeContactInvalid {
+                            bind_addr: listener.bind_addr.clone(),
+                        });
+                    }
                 }
             }
             "manual" => {
@@ -1007,6 +1014,58 @@ mod tests {
         let dynamic = valid_dynamic_config();
         let result = validate(&config, &dynamic, false);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rule19_acme_contact_mailto_empty_email() {
+        let mut config = valid_static_config();
+        config.listeners[0].tls = TlsConfig {
+            mode: "acme".to_string(),
+            acme_domains: vec!["test.local".to_string()],
+            acme_cache_dir: "/tmp/cache".to_string(),
+            acme_directory: "production".to_string(),
+            acme_contact: "mailto:".to_string(),
+            cert_path: String::new(),
+            key_path: String::new(),
+        };
+        config.listeners[0].sites = vec![SiteConfig {
+            host: "test.local".to_string(),
+            upstream: "127.0.0.1:8080".to_string(),
+            ..valid_dynamic_config().sites[0].clone()
+        }];
+        let dynamic = valid_dynamic_config();
+        let result = validate(&config, &dynamic, false);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::AcmeContactInvalid { .. })));
+    }
+
+    #[test]
+    fn rule19_acme_contact_mailto_no_at_sign() {
+        let mut config = valid_static_config();
+        config.listeners[0].tls = TlsConfig {
+            mode: "acme".to_string(),
+            acme_domains: vec!["test.local".to_string()],
+            acme_cache_dir: "/tmp/cache".to_string(),
+            acme_directory: "production".to_string(),
+            acme_contact: "mailto:user".to_string(),
+            cert_path: String::new(),
+            key_path: String::new(),
+        };
+        config.listeners[0].sites = vec![SiteConfig {
+            host: "test.local".to_string(),
+            upstream: "127.0.0.1:8080".to_string(),
+            ..valid_dynamic_config().sites[0].clone()
+        }];
+        let dynamic = valid_dynamic_config();
+        let result = validate(&config, &dynamic, false);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::AcmeContactInvalid { .. })));
     }
 
     #[test]
