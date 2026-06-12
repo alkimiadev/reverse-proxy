@@ -1,7 +1,7 @@
 ---
 id: fix/rate-limiter-connectinfo-tests
 name: Update rate limiter tests to use ConnectInfo instead of X-Forwarded-For (S10)
-status: pending
+status: completed
 depends_on: [fix/rate-limiter-ip-source]
 scope: narrow
 risk: medium
