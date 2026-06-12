@@ -1,7 +1,7 @@
 ---
 id: fix/json-format-without-logfile
 name: Fix JSON format not applied when no log file is configured (C4)
-status: pending
+status: completed
 depends_on: []
 scope: single
 risk: trivial
