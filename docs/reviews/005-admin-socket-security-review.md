@@ -627,6 +627,169 @@ that clearly states:
    between startup and reload validation.
 9. **Remaining W and S findings** — Fix opportunistically.
 
+## Architectural Recommendation: Replace Unix Domain Socket with Authenticated HTTP Endpoint
+
+### Problem
+
+Every finding in this review (C1–C3, W1–W7, S1–S6) stems from the fundamental
+design choice of using a Unix domain socket for the admin API. Unix sockets
+bring an entire class of vulnerabilities that don't exist in HTTP endpoints:
+
+- **Filesystem-based attack surface** — symlink races, stale socket cleanup,
+  path traversal, permission management, directory mount issues in containers
+- **No built-in authentication** — filesystem permissions are the only access
+  control, which breaks in container environments (volume mounts, tmpfs quirks,
+  umask variations) and provides no defense against any local user
+- **Custom protocol** — line-based command protocol instead of standard HTTP,
+  requiring `socat` or custom tooling instead of `curl`
+- **Operational complexity** — socket cleanup on startup, stale socket detection,
+  shutdown cleanup, container volume mounts for socket access
+
+### Existing Infrastructure
+
+The proxy already has a localhost-only HTTP listener (`src/health.rs`) bound to
+`127.0.0.1:9900` that serves `/health`. This listener:
+
+- Is already axum-based with a router
+- Is already restricted to localhost
+- Already supports middleware layers
+- Already has integration tests
+
+### Proposed Replacement
+
+Replace the Unix domain socket admin API with authenticated HTTP endpoints on
+the existing health check listener:
+
+```
+GET  http://127.0.0.1:9900/admin/reload  →  triggers config reload
+GET  http://127.0.0.1:9900/admin/status   →  returns uptime + site count
+```
+
+Authentication via a Bearer token supplied at startup (config or env var
+`ADMIN_KEY`), validated using constant-time comparison (`subtle` crate) to
+prevent timing attacks. This is the same pattern used in
+`/workspace/embedding_service/src/auth.rs`:
+
+```rust
+use subtle::ConstantTimeEq;
+
+pub struct AdminAuthConfig {
+    pub admin_key: Option<String>,  // None = admin endpoints disabled
+}
+
+pub async fn admin_auth_middleware(
+    State(auth_config): State<Arc<AdminAuthConfig>>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let expected = auth_config.admin_key.as_deref().unwrap_or_default();
+    let provided = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+
+    match provided {
+        Some(key) if key.as_bytes().ct_eq(expected.as_bytes()).into() => {
+            request.headers_mut().remove(header::AUTHORIZATION);
+            Ok(next.run(request).await)
+        }
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
+}
+```
+
+### Config Change
+
+Replace `admin_socket_path` (StaticConfig) with `admin_key` (StaticConfig or
+environment variable):
+
+```toml
+# Before
+admin_socket_path = "/run/reverse-proxy/admin.sock"
+
+# After
+admin_key = ""   # empty = admin endpoints disabled (return 404)
+                 # set to a token to enable admin endpoints
+```
+
+Or via environment variable:
+```
+ADMIN_KEY=your-secure-random-token-here
+```
+
+### Why This Eliminates Every Finding
+
+| Finding | Socket-specific? | Eliminated by HTTP? |
+|---------|-------------------|---------------------|
+| C1 (symlink race) | Yes | No filesystem path management at all |
+| C2 (no auth) | Yes | Bearer token with constant-time comparison |
+| C3 (info leak) | Partially | Generic HTTP error responses, no paths |
+| W1 (no conn limit) | Partially | axum/TCP backlog handles this naturally |
+| W2 (config TOCTOU) | No | Still exists (same file read pattern) |
+| W3 (path validation) | Yes | No socket path to validate |
+| W4 (is_socket_active) | Yes | No stale socket detection needed |
+| W5 (wildcard flag) | No | Still exists (reload validation) |
+| W6 (changed_fields) | No | Still exists (operational UX) |
+| W7 (health port recon) | Partially | Merged into admin auth |
+
+### What Changes
+
+**Removed:**
+- `src/admin/socket.rs` — entire file (826 lines)
+- `src/admin/mod.rs` — re-exports
+- `admin_socket_path` config field
+- Socket cleanup/stale detection logic
+- `socat`-based operational procedures
+- Docker volume mount for `/run/reverse-proxy`
+
+**Added:**
+- `src/admin/auth.rs` — Bearer token middleware with `subtle::ConstantTimeEq`
+- `src/admin/handler.rs` — HTTP handlers for `/admin/reload` and `/admin/status`
+- `admin_key` config field (or env var)
+- Admin route registration on the health check listener
+
+**Modified:**
+- `src/health.rs` — add admin routes behind auth middleware
+- `src/main.rs` — remove socket init, add admin route setup
+- `src/config/static_config.rs` — replace `admin_socket_path` with `admin_key`
+- `docs/architecture/decisions/014-unix-socket-reload.md` — superseded
+- `deploy/docker-compose.yml` — remove socket volume mount
+- `deploy/README.md` — replace `socat` commands with `curl` examples
+
+**Unchanged:**
+- `src/shutdown.rs` — SIGHUP reload path remains as-is
+- `src/config/dynamic_config.rs` — `ConfigReloadHandle` still used by both
+  SIGHUP and admin reload
+
+### Operational Comparison
+
+```bash
+# Before (Unix socket)
+echo "reload" | socat - UNIX-CONNECT:/run/reverse-proxy/admin.sock
+echo "status" | socat - UNIX-CONNECT:/run/reverse-proxy/admin.sock
+
+# After (HTTP with Bearer token)
+curl -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/reload
+curl -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/status
+```
+
+HTTP is universally understood by CI/CD tools, load balancer health checks,
+and monitoring systems. No special client (`socat`) required.
+
+### SIGHUP Still Works
+
+This change does **not** remove SIGHUP as a reload mechanism. SIGHUP reload
+(`src/shutdown.rs:handle_sighup_reload`) continues to work exactly as before.
+The admin HTTP endpoint provides the same functionality with the addition of
+structured feedback and authentication.
+
+### Recommendation
+
+Mark C1, C2, C3, W1, W3, W4, S1–S6 as **resolved by architectural change**.
+Implement W2 and W5 as standalone fixes regardless. Schedule the socket-to-HTTP
+migration as the primary implementation task for the next development round.
+
 ## Additional Notes
 
 The unusual traffic on this file was likely driven by interest in C1 and C2.
