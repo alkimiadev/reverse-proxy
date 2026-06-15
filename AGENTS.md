@@ -35,6 +35,7 @@ src/
 ├── cli.rs               # CLI parsing (clap), config loading, validation
 ├── lib.rs               # Library root, module declarations
 ├── config/
+│   ├── mod.rs            # ReloadError, read_and_validate_config(), FullConfig
 │   ├── static_config.rs # StaticConfig — immutable, requires restart
 │   ├── dynamic_config.rs# DynamicConfig — hot-reloadable via ArcSwap
 │   ├── validation.rs    # Config validation rules (called at startup and reload)
@@ -54,8 +55,9 @@ src/
 │   ├── mod.rs           # Rate limiting middleware, eviction task
 │   └── bucket.rs        # Token bucket implementation (IPv4 /32, IPv6 /64)
 ├── admin/
-│   ├── socket.rs        # Unix domain socket admin API (reload, status)
-│   └── mod.rs
+│   ├── auth.rs         # Bearer token auth middleware (subtle, SHA-256)
+│   ├── handler.rs      # HTTP handlers for /admin/reload, /status, /rotate-key
+│   └── mod.rs          # Re-exports
 ├── health.rs            # Health check endpoint on localhost:9900
 ├── logging/
 │   ├── mod.rs           # Logging init (file + stdout, ANSI disabled)
@@ -69,7 +71,7 @@ src/
 
 - **StaticConfig vs DynamicConfig**: Static config (bind addresses, TLS,
   ports) requires a restart. Dynamic config (sites, rate limits, body limits)
-  can be reloaded at runtime via SIGHUP or admin socket, using `ArcSwap` for
+  can be reloaded at runtime via SIGHUP or admin HTTP API, using `ArcSwap` for
   lock-free reads.
 - **Multi-listener**: `[[listeners]]` in TOML — each listener has its own bind
   address, TLS config, and site routing. Sites are collected into a global
@@ -78,10 +80,18 @@ src/
   (not appended), X-Real-IP is set from the connection's remote address.
 - **No `/health` on public listener**: Health checking is localhost:9900 only.
   The main listener does not intercept any paths.
+- **Admin HTTP API**: Authenticated Bearer token endpoints on the health check
+  port (`admin_key_path`). Empty `admin_key_path` disables admin endpoints
+  (returns 404). Key file contains plaintext token, read once at startup.
 - **HTTP/2 client-facing only**: ALPN detects h2 vs http/1.1. Upstream
   connections are always HTTP/1.1.
 - **IPv6 rate limiting**: IPv6 addresses are normalized to /64 prefixes so
   addresses within the same /64 share a token bucket.
+- **Config reload TOCTOU**: Both SIGHUP and admin HTTP reload paths use
+  `read_and_validate_config()` which checks file mtime before and after
+  reading. If mtime changed, reload is rejected with a retry message.
+- **Wildcard bind consistency**: `cli_allow_wildcard_bind` is stored in
+  `ConfigReloadHandle` and used for both startup and reload validation.
 
 ## Config Format
 
@@ -99,12 +109,15 @@ TOML. See `docs/architecture/config.md` for full schema. Key validation rules:
 - `http_port` must be 0 (disabled) or 1–65535; `https_port` must be 1–65535
 - `health_check_port` must not conflict with any listener's http_port or
   https_port on the same bind address
+- `admin_key_path` must be an absolute path or empty (empty disables admin);
+  path traversal (`..`) is rejected; default is `/etc/reverse-proxy/admin-key`
 
 ## Testing
 
 Tests use `rcgen` for self-signed certificate generation and `reqwest` for
 HTTP client requests. Integration tests are in `tests/integration_test.rs`
-with helpers in `tests/helpers/`.
+with helpers in `tests/helpers/`. Admin endpoint tests use `reqwest` HTTP
+client with Bearer token authentication.
 
 ```bash
 cargo test                    # all tests
@@ -139,7 +152,19 @@ See `deploy/README.md` for step-by-step setup instructions.
 Add a `[[listeners.sites]]` entry to config and reload:
 
 ```bash
-echo "reload" | socat - UNIX-CONNECT:/run/reverse-proxy/admin.sock
+curl -X POST -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/reload
+```
+
+### Checking proxy status
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/status
+```
+
+### Rotating the admin key
+
+```bash
+curl -X POST -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/rotate-key
 ```
 
 ### Changing rate limits

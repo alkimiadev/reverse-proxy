@@ -1,6 +1,6 @@
 ---
-status: draft
-last_updated: 2026-06-14
+status: resolved
+last_updated: 2026-06-15
 reviewed_code:
   - src/server.rs
   - src/proxy/handler.rs
@@ -14,7 +14,9 @@ reviewed_code:
   - src/tls/redirect.rs
   - src/rate_limit/mod.rs
   - src/rate_limit/bucket.rs
-  - src/admin/socket.rs
+  - src/admin/auth.rs
+  - src/admin/handler.rs
+  - src/admin/mod.rs
   - src/shutdown.rs
   - src/config/static_config.rs
   - src/config/dynamic_config.rs
@@ -316,25 +318,29 @@ decisions (bind addresses, TLS, upstream targets, rate limits, etc.)
 ### 4.2 Config File Read (Reload — SIGHUP)
 
 **Source**: Filesystem (same config file, re-read on SIGHUP)
-**Entry**: `src/shutdown.rs:88` — `tokio::fs::read_to_string(config_path).await`
+**Entry**: `src/config/mod.rs` — `read_and_validate_config()` (called from
+  `src/shutdown.rs:handle_sighup_reload`)
 **Input**: Entire contents of the config file at reload time
 **Validation**: Same `FullConfig::parse()` + `validate()` pipeline. Failed
-  parse/validation retains old config (failsafe).
+  parse/validation retains old config (failsafe). Mtime is checked before and
+  after reading to detect mid-write changes (ADR-029).
 **Sink**: Swapped into `ArcSwap<DynamicConfig>` and `ArcSwap<StaticConfig>`
-**Risk**: Medium. **TOCTOU between reads**: If another process is writing the
-  config file at the exact moment SIGHUP triggers a read, a partial file could
-  be read. The parse would likely fail (invalid TOML), triggering a reload
-  error, which is safe. But a carefully timed write could produce a valid-but-
-  malicious partial file. This is the same issue noted in review #005 (W2).
+**Risk**: Low. TOCTOU between reads is mitigated by the mtime check, which
+  rejects the reload if the file changed during read. A carefully timed write
+  that starts before the first `stat()` and completes before the read could
+  still produce a partial file, but this is extremely unlikely in practice.
 
-### 4.3 Config File Read (Reload — Admin Socket)
+### 4.3 Config File Read (Reload — Admin HTTP)
 
-**Source**: Filesystem (same config file, re-read on admin "reload" command)
-**Entry**: `src/admin/socket.rs:257`
+**Source**: Filesystem (same config file, re-read on admin HTTP POST /admin/reload)
+**Entry**: `src/config/mod.rs` — `read_and_validate_config()` (called from
+  `src/admin/handler.rs:reload_handler` and `src/shutdown.rs:handle_sighup_reload`)
 **Input**: Same as 4.2
-**Validation**: Same pipeline, plus reload mutex serialization
-**Risk**: Same as 4.2. Additionally, the admin socket is unauthenticated
-(review #005, C2), so any local user can trigger a config re-read.
+**Validation**: Same pipeline, plus reload mutex serialization. Additionally,
+  mtime is checked before and after reading to detect mid-write changes (ADR-029).
+  Admin HTTP endpoint requires Bearer token authentication (ADR-028).
+**Risk**: Lower than 4.2. TOCTOU between reads is mitigated by the mtime check
+  (rejects reload if file changed during read). Admin endpoint is authenticated.
 
 ### 4.4 Config Values Used in URL Construction
 
@@ -416,30 +422,31 @@ decisions (bind addresses, TLS, upstream targets, rate limits, etc.)
 
 ## Category 6: Admin Interface
 
-### 6.1 Admin Socket Connections
+### 6.1 Admin HTTP Authentication
 
-**Source**: Local process (Unix domain socket)
-**Entry**: `src/admin/socket.rs:110` — `listener.accept()`
-**Input**: Unix domain socket connections from local processes
-**Validation**: No authentication or peer credential checking. Any process with
-  filesystem access to the socket can connect.
-**Risk**: Covered extensively in review #005 (C2). Being replaced by
-  authenticated HTTP endpoint per the architectural recommendation in that
-  review.
+**Source**: Network (HTTP requests to `/admin/*` on health check port)
+**Entry**: `src/admin/auth.rs` — Bearer token authentication middleware
+**Input**: HTTP requests with `Authorization: Bearer <key>` header
+**Validation**: Constant-time SHA-256 comparison of provided key against stored
+  hash. Key hash loaded from file at startup (`src/admin/auth.rs:load_admin_key`).
+  Admin endpoints return 404 if `admin_key_path` is empty (admin disabled).
+**Risk**: Low. Bearer token is validated on every request. Key rotation available
+  via `/admin/rotate-key`. See review #005 (C2, C3) for the original socket
+  findings that prompted the migration to authenticated HTTP.
 
-### 6.2 Admin Command Input
+### 6.2 Admin HTTP Command Processing
 
-**Source**: Local process (text sent over Unix socket)
-**Entry**: `src/admin/socket.rs:167-252` — `handle_connection()`
-**Input**: Text command string (expected: "reload", "status", or empty/unknown)
+**Source**: Network (HTTP POST/GET requests to `/admin/reload`, `/admin/status`,
+  `/admin/rotate-key`)
+**Entry**: `src/admin/handler.rs` — Axum handlers for admin endpoints
+**Input**: HTTP request bodies (minimal — no user input processed beyond auth)
 **Validation**:
-- 4 KiB read limit via `.take(4096)` (`socket.rs:171`)
-- 5-second read timeout (`socket.rs:174-175`)
-- Newline termination required
-- Command allowlist: only "reload" and "status" are recognized
-- Unknown commands echo input back: `"unknown command: {input}"` (minor
-  information disclosure)
-**Risk**: Covered in review #005 (C3, W1).
+- All admin endpoints require Bearer token auth (401 without valid token)
+- Config reload reads file with mtime TOCTOU check (ADR-029)
+- Status and rotate-key endpoints return JSON with no user-controlled input
+**Risk**: Low. No arbitrary command input as in the previous socket interface.
+  See review #005 (C1, C2, C3, W1, W3, W4, S1–S6) for the original findings
+  that were resolved by the HTTP migration (ADR-028).
 
 ---
 
@@ -621,11 +628,12 @@ disagree on header parsing. Specific patterns:
 
 ### P4. Config File Read on Reload
 
-**File**: `src/shutdown.rs:88`, `src/admin/socket.rs:257`
+**File**: `src/config/mod.rs` — `read_and_validate_config()` (called from
+  `src/shutdown.rs:handle_sighup_reload` and `src/admin/handler.rs:reload_handler`)
 **Why**: Config is re-read from disk on SIGHUP and admin reload. TOCTOU between
-read and use. If config is compromised (via a separate vulnerability or
-misconfiguration), the proxy will happily apply attacker-controlled upstream
-addresses, creating an effective SSRF.
+  read and use is mitigated by mtime check (ADR-029). If config is compromised
+  (via a separate vulnerability or misconfiguration), the proxy will happily
+  apply attacker-controlled upstream addresses, creating an effective SSRF.
 
 ### P5. ACME Directory URL
 

@@ -2,11 +2,13 @@
 status: resolved
 last_updated: 2026-06-15
 reviewed_code:
-  - src/admin/socket.rs
+  - src/admin/auth.rs
+  - src/admin/handler.rs
   - src/admin/mod.rs
   - src/main.rs
   - src/shutdown.rs
   - src/config/dynamic_config.rs
+  - src/config/mod.rs
   - src/config/validation.rs
   - src/health.rs
   - src/proxy/handler.rs
@@ -32,16 +34,16 @@ ADR-028. Each finding is resolved as follows:
 | C2 (no authentication) | **Resolved by ADR-028** — Bearer token with constant-time comparison |
 | C3 (info leak) | **Resolved by ADR-028** — generic error messages, details logged server-side |
 | W1 (no conn limit) | **Resolved by ADR-028** — axum/TCP backlog handles this naturally |
-| W2 (config TOCTOU) | **Tracked separately** — ADR-029, task `fix/config-reload-toctou` |
+| W2 (config TOCTOU) | **Resolved by ADR-029** — mtime check before/after read, task `fix/config-reload-toctou` implemented |
 | W3 (path validation) | **Resolved by ADR-028** — no socket path to validate; `admin_key_path` validation added (config.md rule 20) |
 | W4 (is_socket_active side effect) | **Resolved by ADR-028** — no stale socket detection needed |
-| W5 (wildcard flag) | **Tracked separately** — ADR-030, task `fix/wildcard-flag-reload` |
-| W6 (changed_fields in response) | **Will be addressed** — `fix/admin-http-api` task includes `changed_fields` in `/admin/reload` response |
+| W5 (wildcard flag) | **Resolved by ADR-030** — `cli_allow_wildcard_bind` stored in `ConfigReloadHandle`, task `fix/wildcard-flag-reload` implemented |
+| W6 (changed_fields in response) | **Resolved** — `/admin/reload` endpoint returns status; changed_fields warning logged server-side |
 | W7 (health check port recon) | **Accepted risk** — localhost-only, minimal information. Admin endpoints add authentication |
 | S1–S6 (suggestions) | **Resolved by ADR-028** — all suggestions relate to the socket, which is removed |
 
-Implementation tasks: `fix/admin-http-api`, `fix/config-reload-toctou`,
-`fix/wildcard-flag-reload`.
+Implementation tasks: `fix/admin-http-api` (done), `fix/config-reload-toctou` (done),
+`fix/wildcard-flag-reload` (done).
 
 ## Purpose
 
