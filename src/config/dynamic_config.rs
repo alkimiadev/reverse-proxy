@@ -474,4 +474,34 @@ mod tests {
         assert!(config.routing_table.contains_key("my.site"));
         assert_eq!(config.routing_table.len(), 1);
     }
+
+    #[test]
+    fn reload_accepts_wildcard_bind_when_flag_true() {
+        let initial = test_fixtures::test_dynamic_config();
+        let config_arc = Arc::new(ArcSwap::from_pointee(initial.clone()));
+        let mut static_config = test_fixtures::test_static_config();
+        static_config.listeners[0].bind_addr = "0.0.0.0".to_string();
+        static_config.allow_wildcard_bind = false;
+        let handle = ConfigReloadHandle::new(config_arc.clone(), static_config.clone(), true);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(handle.reload(static_config, initial));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn reload_rejects_wildcard_bind_when_flag_false() {
+        let initial = test_fixtures::test_dynamic_config();
+        let config_arc = Arc::new(ArcSwap::from_pointee(initial.clone()));
+        let mut static_config = test_fixtures::test_static_config();
+        static_config.listeners[0].bind_addr = "0.0.0.0".to_string();
+        static_config.allow_wildcard_bind = false;
+        let handle = ConfigReloadHandle::new(config_arc.clone(), static_config.clone(), false);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(handle.reload(static_config, initial));
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("0.0.0.0"));
+    }
 }
