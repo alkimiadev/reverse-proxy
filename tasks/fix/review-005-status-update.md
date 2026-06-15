@@ -1,7 +1,7 @@
 ---
 id: fix/review-005-status-update
 name: Update security review #005 status to reflect ADR-028 decision
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
@@ -68,4 +68,8 @@ resolution status.
 
 ## Summary
 
-> To be filled on completion
+Updated review #005 status to `resolved`, added resolution table annotating all
+findings. Updated W2/W5/W6 rows to show resolved status. Updated reviewed_code
+to reference new admin files (auth.rs, handler.rs, mod.rs). Updated review #006
+status to `resolved`, replaced Category 6 (admin socket → admin HTTP API),
+updated entries 4.2, 4.3, P4, and reviewed_code for new file paths and mtime check.

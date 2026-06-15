@@ -1,7 +1,7 @@
 ---
 id: fix/config-reload-toctou
 name: Add mtime check to config reload to detect mid-write file changes (ADR-029)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
@@ -97,4 +97,7 @@ log a warning: "config file changed during read, please retry SIGHUP".
 
 ## Summary
 
-> To be filled on completion
+Implemented `read_and_validate_config()` in `src/config/mod.rs` with mtime check
+before/after reading. Both SIGHUP and admin HTTP reload paths use this shared
+function. `ReloadError::FileChangedDuringRead` returns HTTP 409 Conflict from
+the admin endpoint and logs a warning on SIGHUP. 7 new unit tests added.

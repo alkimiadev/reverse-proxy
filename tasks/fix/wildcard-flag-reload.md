@@ -1,7 +1,7 @@
 ---
 id: fix/wildcard-flag-reload
 name: Store cli_allow_wildcard_bind in ConfigReloadHandle for consistent reload validation (ADR-030)
-status: pending
+status: completed
 depends_on: []
 scope: narrow
 risk: low
@@ -109,4 +109,8 @@ parameter. Add a test that verifies:
 
 ## Summary
 
-> To be filled on completion
+Added `cli_allow_wildcard_bind: bool` field to `ConfigReloadHandle`, stored at
+construction time from `LoadedConfig.allow_wildcard_bind`. `reload()` now passes
+`self.cli_allow_wildcard_bind` to `validate()` instead of hardcoded `false`.
+All call sites updated. 2 new unit tests verify wildcard bind acceptance/rejection
+on reload.

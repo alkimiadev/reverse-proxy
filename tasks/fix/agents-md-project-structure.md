@@ -1,7 +1,7 @@
 ---
 id: fix/agents-md-project-structure
 name: Update AGENTS.md project structure and common modifications after admin refactor
-status: pending
+status: completed
 depends_on: [fix/admin-http-api]
 scope: narrow
 risk: low
@@ -77,4 +77,9 @@ Unix socket (tokio::net::UnixStream).
 
 ## Summary
 
-> To be filled on completion
+Updated project structure (admin/auth.rs, handler.rs, mod.rs; config/mod.rs),
+architecture concepts (admin HTTP API, TOCTOU check, wildcard bind consistency),
+config format (admin_key_path), testing (HTTP-based admin tests), and common
+modifications (curl commands replacing socat). Updated README.md with same
+changes: admin HTTP API section, project structure, architecture diagram, config
+table, and Docker compose volumes.

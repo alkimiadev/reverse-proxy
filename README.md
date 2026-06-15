@@ -28,7 +28,7 @@ server or load balancer.
 - **Rate limiting** — per-IP token bucket with fail2ban-compatible structured
   logging (IPv6 rate limited per /64 prefix)
 - **Proxy headers** — X-Real-IP, X-Forwarded-For (edge proxy model), X-Forwarded-Proto
-- **Hot config reload** — SIGHUP or admin Unix domain socket with success/failure
+- **Hot config reload** — SIGHUP or authenticated admin HTTP API with success/failure
   feedback
 - **Health check** — localhost-only endpoint on a separate port (default: 9900)
 - **HTTP → HTTPS redirect** — per-listener redirect on port 80
@@ -113,13 +113,13 @@ Configuration uses TOML and is split into **static** (requires restart) and
 | `listeners` | (required) | TLS listener definitions |
 | `allow_wildcard_bind` | `false` | Allow `0.0.0.0` bind addresses |
 | `health_check_port` | `9900` | Local health check port (`0` to disable) |
-| `admin_socket_path` | `/run/reverse-proxy/admin.sock` | Admin Unix socket (empty string to disable) |
+| `admin_key_path` | `/etc/reverse-proxy/admin-key` | Path to admin Bearer token file (empty string to disable) |
 | `shutdown_timeout_secs` | `30` | Graceful shutdown timeout |
 | `logging.level` | `"info"` | Log level |
 | `logging.format` | `"text"` | Log format (`"text"` or `"json"`) |
 | `logging.log_file_path` | (not set) | Path to log file for fail2ban |
 
-### Dynamic Config (hot-reloadable via SIGHUP or admin socket)
+### Dynamic Config (hot-reloadable via SIGHUP or admin HTTP API)
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -201,7 +201,7 @@ services:
       - /etc/reverse-proxy/config.toml:/etc/reverse-proxy/config.toml:ro
       - /var/lib/reverse-proxy/acme-cache:/var/lib/reverse-proxy/acme-cache
       - /var/log/reverse-proxy:/var/log/reverse-proxy
-      - /run/reverse-proxy:/run/reverse-proxy
+      - /etc/reverse-proxy/admin-key:/etc/reverse-proxy/admin-key:ro
     networks:
       - proxy-net
     healthcheck:
@@ -269,28 +269,34 @@ Enable file logging in config:
 log_file_path = "/var/log/reverse-proxy/access.log"
 ```
 
-## Admin Socket
+## Admin HTTP API
 
-The admin Unix domain socket supports two commands:
+The admin HTTP API is available on the health check port (default: 9900) and
+requires Bearer token authentication. Set `admin_key_path` to a file containing
+the token (or leave empty to disable admin endpoints).
 
 ```bash
 # Reload config
-echo "reload" | socat - UNIX-CONNECT:/run/reverse-proxy/admin.sock
+curl -X POST -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/reload
 
 # Check status
-echo "status" | socat - UNIX-CONNECT:/run/reverse-proxy/admin.sock
+curl -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/status
+
+# Rotate admin key
+curl -X POST -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/rotate-key
 ```
 
-Responses are newline-terminated JSON:
+Responses are JSON:
 
 ```json
 {"status":"ok"}
 {"status":"ok","uptime_secs":1234,"sites":2}
-{"status":"error","message":"config validation failed: ..."}
+{"status":"error","message":"config file changed during read, please retry"}
 ```
 
-Config can also be reloaded with `kill -SIGHUP $(pidof reverse-proxy)`, but
-SIGHUP provides no feedback on success or failure.
+If `admin_key_path` is empty or the key file is missing, admin endpoints return
+`404 Not Found`. Config can also be reloaded with `kill -SIGHUP $(pidof
+reverse-proxy)`, but SIGHUP provides no feedback on success or failure.
 
 ## Health Check
 
@@ -322,7 +328,7 @@ config.toml ──────► │  StaticConfig + DynamicConfig      │
                     │  └────────────────────────────────┘   │
                     │                                      │
                     │  /health → 200 OK (port 9900)        │
-                    │  Admin socket (Unix domain)           │
+                    │  Admin HTTP API (port 9900, auth)     │
                     └────────────────────────────────────┘
 ```
 
@@ -336,9 +342,11 @@ src/
 ├── cli.rs               # CLI argument parsing
 ├── lib.rs               # Library root
 ├── config/
+│   ├── mod.rs            # ReloadError, read_and_validate_config(), FullConfig
 │   ├── static_config.rs # Immutable startup configuration
 │   ├── dynamic_config.rs# Hot-reloadable runtime configuration
-│   └── validation.rs    # Config validation rules
+│   ├── validation.rs    # Config validation rules
+│   └── test_fixtures.rs # Test config generation helpers
 ├── proxy/
 │   ├── handler.rs       # Core reverse proxy handler
 │   ├── headers.rs       # Proxy header injection
@@ -353,8 +361,9 @@ src/
 │   ├── mod.rs           # Rate limiting middleware
 │   └── bucket.rs        # Token bucket implementation
 ├── admin/
-│   ├── socket.rs        # Unix domain socket admin API
-│   └── mod.rs
+│   ├── auth.rs          # Bearer token auth middleware
+│   ├── handler.rs       # HTTP handlers for /admin/reload, /status, /rotate-key
+│   └── mod.rs           # Re-exports
 ├── health.rs            # Health check endpoint
 ├── logging/
 │   ├── mod.rs           # Logging initialization
