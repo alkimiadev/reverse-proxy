@@ -170,8 +170,8 @@ fn diff_static_config(old: &StaticConfig, new: &StaticConfig) -> Vec<String> {
     if old.health_check_port != new.health_check_port {
         changes.push("health_check_port".to_string());
     }
-    if old.admin_socket_path != new.admin_socket_path {
-        changes.push("admin_socket_path".to_string());
+    if old.admin_key_path != new.admin_key_path {
+        changes.push("admin_key_path".to_string());
     }
     if old.shutdown_timeout_secs != new.shutdown_timeout_secs {
         changes.push("shutdown_timeout_secs".to_string());

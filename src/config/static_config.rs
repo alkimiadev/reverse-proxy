@@ -7,8 +7,8 @@ pub struct StaticConfig {
     pub allow_wildcard_bind: bool,
     #[serde(default = "default_health_check_port")]
     pub health_check_port: u16,
-    #[serde(default = "default_admin_socket_path")]
-    pub admin_socket_path: String,
+    #[serde(default = "default_admin_key_path")]
+    pub admin_key_path: String,
     #[serde(default = "default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
     #[serde(default)]
@@ -19,8 +19,8 @@ pub fn default_health_check_port() -> u16 {
     9900
 }
 
-pub fn default_admin_socket_path() -> String {
-    "/run/reverse-proxy/admin.sock".to_string()
+pub fn default_admin_key_path() -> String {
+    "/etc/reverse-proxy/admin-key".to_string()
 }
 
 pub fn default_shutdown_timeout_secs() -> u64 {
@@ -103,7 +103,7 @@ mod tests {
     fn multi_config_toml() -> &'static str {
         r#"
 health_check_port = 9900
-admin_socket_path = "/run/reverse-proxy/admin.sock"
+admin_key_path = "/etc/reverse-proxy/admin-key"
 
 [logging]
 level = "info"
@@ -152,7 +152,7 @@ upstream_scheme = "http"
     fn shared_ip_san_toml() -> &'static str {
         r#"
 health_check_port = 9900
-admin_socket_path = "/run/reverse-proxy/admin.sock"
+admin_key_path = "/etc/reverse-proxy/admin-key"
 
 [logging]
 level = "info"
@@ -195,8 +195,8 @@ upstream = "127.0.0.1:8080"
         allow_wildcard_bind: bool,
         #[serde(default = "default_health_check_port")]
         health_check_port: u16,
-        #[serde(default = "default_admin_socket_path")]
-        admin_socket_path: String,
+        #[serde(default = "default_admin_key_path")]
+        admin_key_path: String,
         #[serde(default = "default_shutdown_timeout_secs")]
         shutdown_timeout_secs: u64,
         #[serde(default)]
@@ -213,7 +213,7 @@ upstream = "127.0.0.1:8080"
         assert_eq!(config.listeners.len(), 2);
         assert!(!config.allow_wildcard_bind);
         assert_eq!(config.health_check_port, 9900);
-        assert_eq!(config.admin_socket_path, "/run/reverse-proxy/admin.sock");
+        assert_eq!(config.admin_key_path, "/etc/reverse-proxy/admin-key");
         assert_eq!(config.shutdown_timeout_secs, 30);
         assert_eq!(config.logging.level, "info");
         assert_eq!(config.logging.format, "text");
@@ -291,8 +291,8 @@ acme_cache_dir = "/tmp/cache"
             allow_wildcard_bind: bool,
             #[serde(default = "default_health_check_port")]
             health_check_port: u16,
-            #[serde(default = "default_admin_socket_path")]
-            admin_socket_path: String,
+            #[serde(default = "default_admin_key_path")]
+            admin_key_path: String,
             #[serde(default = "default_shutdown_timeout_secs")]
             shutdown_timeout_secs: u64,
             #[serde(default)]
@@ -305,7 +305,7 @@ acme_cache_dir = "/tmp/cache"
 
         assert!(!config.allow_wildcard_bind);
         assert_eq!(config.health_check_port, 9900);
-        assert_eq!(config.admin_socket_path, "/run/reverse-proxy/admin.sock");
+        assert_eq!(config.admin_key_path, "/etc/reverse-proxy/admin-key");
         assert_eq!(config.shutdown_timeout_secs, 30);
         assert_eq!(config.logging.level, "info");
         assert_eq!(config.logging.format, "text");

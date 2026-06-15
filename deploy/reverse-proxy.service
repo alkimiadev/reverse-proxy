@@ -15,7 +15,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/var/lib/reverse-proxy /var/log/reverse-proxy
+ReadWritePaths=/var/lib/reverse-proxy /var/log/reverse-proxy /etc/reverse-proxy
 
 # ACME challenge cache directory
 StateDirectory=reverse-proxy

@@ -20,7 +20,13 @@ docker build -t reverse-proxy .
 sudo mkdir -p /etc/reverse-proxy
 sudo mkdir -p /var/lib/reverse-proxy/acme-cache
 sudo mkdir -p /var/log/reverse-proxy
-sudo mkdir -p /run/reverse-proxy
+```
+
+For the admin API, create the admin key file:
+
+```bash
+openssl rand -hex 32 | sudo tee /etc/reverse-proxy/admin-key
+sudo chmod 600 /etc/reverse-proxy/admin-key
 ```
 
 ### 3. Create the config file
@@ -31,6 +37,7 @@ Let's Encrypt:
 ```toml
 allow_wildcard_bind = true
 health_check_port = 9900
+admin_key_path = "/etc/reverse-proxy/admin-key"
 
 [logging]
 level = "info"
@@ -143,7 +150,6 @@ sudo cp deploy/reverse-proxy.service /etc/systemd/system/
 sudo mkdir -p /etc/reverse-proxy
 sudo mkdir -p /var/lib/reverse-proxy/acme-cache
 sudo mkdir -p /var/log/reverse-proxy
-sudo mkdir -p /run/reverse-proxy
 ```
 
 Create `/etc/reverse-proxy/config.toml` (see example configs in the main
@@ -153,6 +159,7 @@ README). With a bare metal deployment, use the server's actual IP as
 ```toml
 # Single-domain bare metal example
 health_check_port = 9900
+admin_key_path = "/etc/reverse-proxy/admin-key"
 
 [logging]
 level = "info"
@@ -209,11 +216,15 @@ journalctl -u reverse-proxy -f
 # Via SIGHUP (no feedback)
 sudo kill -SIGHUP $(pidof reverse-proxy)
 
-# Via admin socket (returns success/failure JSON)
-echo "reload" | socat - UNIX-CONNECT:/run/reverse-proxy/admin.sock
+# Via admin HTTP API (returns success/failure JSON)
+ADMIN_KEY=$(cat /etc/reverse-proxy/admin-key)
+curl -X POST -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/reload
 
 # Check status
-echo "status" | socat - UNIX-CONNECT:/run/reverse-proxy/admin.sock
+curl -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/status
+
+# Rotate admin key (returns new key, old key is invalidated)
+curl -X POST -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/rotate-key
 ```
 
 ## Multi-Domain Setup
@@ -295,8 +306,9 @@ certificate store.
   This prevents accidental exposure on unintended interfaces.
 - The health check endpoint binds to `127.0.0.1` only and is never exposed on
   public ports.
-- The admin socket should be protected by file permissions. It defaults to
-  `/run/reverse-proxy/admin.sock`.
+- The admin API requires Bearer token authentication on port 9900 (localhost
+  only). Set `admin_key_path` in config to enable, or leave it empty to disable
+  admin endpoints entirely. See ADR-028 for details.
 - Rate limiting is global per-IP (IPv4: /32, IPv6: /64) in the current
   version. Per-site rate limits may be added later.
 - All log output disables ANSI escape codes for fail2ban and container

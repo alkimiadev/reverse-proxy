@@ -73,6 +73,10 @@ pub enum ValidationError {
     UpstreamSchemeInvalid { host: String, scheme: String },
     #[error("listener {bind_addr}: ACME mode requires acme_contact to be a valid mailto: URI (e.g., \"mailto:admin@example.com\")")]
     AcmeContactInvalid { bind_addr: String },
+    #[error("admin_key_path must be an absolute path or empty, got '{path}'")]
+    AdminKeyPathNotAbsolute { path: String },
+    #[error("admin_key_path must not contain '..' path traversal: '{path}'")]
+    AdminKeyPathTraversal { path: String },
 }
 
 pub fn validate(
@@ -265,6 +269,19 @@ pub fn validate(
         errors.push(ValidationError::BodyLimitBytesZero { value: 0 });
     }
 
+    if !static_config.admin_key_path.is_empty() {
+        let path = static_config.admin_key_path.as_str();
+        if !path.starts_with('/') {
+            errors.push(ValidationError::AdminKeyPathNotAbsolute {
+                path: static_config.admin_key_path.clone(),
+            });
+        } else if path.contains("..") {
+            errors.push(ValidationError::AdminKeyPathTraversal {
+                path: static_config.admin_key_path.clone(),
+            });
+        }
+    }
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -357,7 +374,7 @@ mod tests {
             }],
             allow_wildcard_bind: false,
             health_check_port: 9900,
-            admin_socket_path: "/run/reverse-proxy/admin.sock".to_string(),
+            admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
             shutdown_timeout_secs: 30,
             logging: LoggingConfig::default(),
         }
@@ -393,7 +410,7 @@ mod tests {
             }],
             allow_wildcard_bind: false,
             health_check_port: 9900,
-            admin_socket_path: "/run/reverse-proxy/admin.sock".to_string(),
+            admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
             shutdown_timeout_secs: 30,
             logging: LoggingConfig::default(),
         }
@@ -1081,7 +1098,7 @@ mod tests {
             listeners: vec![],
             allow_wildcard_bind: false,
             health_check_port: 9900,
-            admin_socket_path: "/run/reverse-proxy/admin.sock".to_string(),
+            admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
             shutdown_timeout_secs: 30,
             logging: LoggingConfig::default(),
         };
@@ -1188,5 +1205,103 @@ mod tests {
     #[test]
     fn rule17_upstream_hostname_with_dots() {
         assert!(is_valid_upstream("app.example.com:8080"));
+    }
+
+    #[test]
+    fn admin_key_path_empty_is_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        fs::write(&cert_path, "cert").unwrap();
+        fs::write(&key_path, "key").unwrap();
+
+        let config = make_static_with_sites(
+            vec![SiteConfig {
+                host: "test.local".to_string(),
+                upstream: "127.0.0.1:8080".to_string(),
+                upstream_scheme: "http".to_string(),
+                upstream_connect_timeout_secs: 5,
+                upstream_request_timeout_secs: 60,
+            }],
+            make_manual_tls(cert_path.to_str().unwrap(), key_path.to_str().unwrap()),
+        );
+        let dynamic = valid_dynamic_config();
+        let result = validate(
+            &StaticConfig {
+                admin_key_path: String::new(),
+                ..config
+            },
+            &dynamic,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn admin_key_path_absolute_is_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        fs::write(&cert_path, "cert").unwrap();
+        fs::write(&key_path, "key").unwrap();
+
+        let config = make_static_with_sites(
+            vec![SiteConfig {
+                host: "test.local".to_string(),
+                upstream: "127.0.0.1:8080".to_string(),
+                upstream_scheme: "http".to_string(),
+                upstream_connect_timeout_secs: 5,
+                upstream_request_timeout_secs: 60,
+            }],
+            make_manual_tls(cert_path.to_str().unwrap(), key_path.to_str().unwrap()),
+        );
+        let dynamic = valid_dynamic_config();
+        let result = validate(
+            &StaticConfig {
+                admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
+                ..config
+            },
+            &dynamic,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn admin_key_path_relative_is_invalid() {
+        let config = valid_static_config();
+        let dynamic = valid_dynamic_config();
+        let result = validate(
+            &StaticConfig {
+                admin_key_path: "relative/path/admin-key".to_string(),
+                ..config
+            },
+            &dynamic,
+            false,
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::AdminKeyPathNotAbsolute { .. })));
+    }
+
+    #[test]
+    fn admin_key_path_traversal_is_invalid() {
+        let config = valid_static_config();
+        let dynamic = valid_dynamic_config();
+        let result = validate(
+            &StaticConfig {
+                admin_key_path: "/etc/../etc/admin-key".to_string(),
+                ..config
+            },
+            &dynamic,
+            false,
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::AdminKeyPathTraversal { .. })));
     }
 }

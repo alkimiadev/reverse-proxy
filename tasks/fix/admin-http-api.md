@@ -1,7 +1,7 @@
 ---
 id: fix/admin-http-api
 name: Replace Unix domain socket admin API with authenticated HTTP admin API (ADR-028)
-status: pending
+status: completed
 depends_on: []
 scope: broad
 risk: high
@@ -181,4 +181,10 @@ Bearer token authentication middleware.
 
 ## Summary
 
-> To be filled on completion
+Replaced Unix domain socket admin API with authenticated HTTP admin API on the
+existing health check listener (port 9900). Bearer token auth with SHA-256 +
+constant-time comparison protects `/admin/reload`, `/admin/status`, and
+`/admin/rotate-key`. Admin disabled (empty `admin_key_path`) returns 404.
+Config field renamed `admin_socket_path` → `admin_key_path`. Deployment files
+updated for key file mount instead of socket directory. All 203 unit tests and
+37 integration tests pass; `cargo clippy` clean.

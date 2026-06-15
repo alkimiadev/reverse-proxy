@@ -10,7 +10,7 @@ services:
       - /etc/reverse-proxy/config.toml:/etc/reverse-proxy/config.toml:ro
       - /var/lib/reverse-proxy/acme-cache:/var/lib/reverse-proxy/acme-cache
       - /var/log/reverse-proxy:/var/log/reverse-proxy
-      - /run/reverse-proxy:/run/reverse-proxy
+      - /etc/reverse-proxy/admin-key:/etc/reverse-proxy/admin-key:ro
     networks:
       - proxy-net
     healthcheck:

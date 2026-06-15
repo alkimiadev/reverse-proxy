@@ -175,7 +175,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config_content = r#"
 health_check_port = 9900
-admin_socket_path = "/tmp/test-admin.sock"
+admin_key_path = "/tmp/test-admin-key"
 
 [logging]
 level = "info"

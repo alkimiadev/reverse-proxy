@@ -20,7 +20,7 @@ pub fn test_static_config() -> StaticConfig {
         }],
         allow_wildcard_bind: false,
         health_check_port: 9900,
-        admin_socket_path: "/tmp/reverse-proxy-test/admin.sock".to_string(),
+        admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
         shutdown_timeout_secs: 30,
         logging: LoggingConfig::default(),
     }

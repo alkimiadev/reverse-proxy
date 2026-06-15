@@ -48,7 +48,7 @@ fn test_config_fixtures() {
 
 #[tokio::test]
 async fn test_health_check_local_port_returns_200() {
-    let (addr, handle) = reverse_proxy::health::start_health_check_listener(0)
+    let (addr, handle) = reverse_proxy::health::start_health_check_listener(0, None, None)
         .await
         .unwrap();
 
@@ -68,7 +68,7 @@ async fn test_health_check_local_port_returns_200() {
 
 #[tokio::test]
 async fn test_health_check_local_port_binds_localhost() {
-    let (addr, handle) = reverse_proxy::health::start_health_check_listener(0)
+    let (addr, handle) = reverse_proxy::health::start_health_check_listener(0, None, None)
         .await
         .unwrap();
 
@@ -80,7 +80,7 @@ async fn test_health_check_local_port_binds_localhost() {
 
 #[tokio::test]
 async fn test_health_check_binds_random_port_when_zero() {
-    let result = reverse_proxy::health::start_health_check_listener(0).await;
+    let result = reverse_proxy::health::start_health_check_listener(0, None, None).await;
     assert!(result.is_ok());
     let (addr, handle) = result.unwrap();
     assert_ne!(addr.port(), 0);
@@ -570,7 +570,7 @@ fn write_valid_config(dir: &Path) -> std::path::PathBuf {
     let config_path = dir.join("config.toml");
     let config = r#"
 health_check_port = 9900
-admin_socket_path = "/tmp/reverse-proxy-test/admin.sock"
+admin_key_path = "/etc/reverse-proxy/admin-key"
 
 [logging]
 level = "info"
@@ -870,7 +870,7 @@ async fn test_sighup_config_reload_valid_config() {
     let dir = tempfile::tempdir().unwrap();
     let config_content = r#"
 health_check_port = 9900
-admin_socket_path = "/tmp/test-admin.sock"
+admin_key_path = "/tmp/test-admin-key"
 
 [logging]
 level = "info"
@@ -939,7 +939,7 @@ async fn test_sighup_config_reload_invalid_config_keeps_old() {
 
 #[tokio::test]
 async fn test_graceful_shutdown_with_health_check() {
-    let (addr, handle) = reverse_proxy::health::start_health_check_listener(0)
+    let (addr, handle) = reverse_proxy::health::start_health_check_listener(0, None, None)
         .await
         .unwrap();
 

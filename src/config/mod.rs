@@ -20,8 +20,8 @@ pub struct FullConfig {
     pub allow_wildcard_bind: bool,
     #[serde(default = "static_config::default_health_check_port")]
     pub health_check_port: u16,
-    #[serde(default = "static_config::default_admin_socket_path")]
-    pub admin_socket_path: String,
+    #[serde(default = "static_config::default_admin_key_path")]
+    pub admin_key_path: String,
     #[serde(default = "static_config::default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
     #[serde(default)]
@@ -40,7 +40,7 @@ impl FullConfig {
             listeners: self.listeners,
             allow_wildcard_bind: self.allow_wildcard_bind,
             health_check_port: self.health_check_port,
-            admin_socket_path: self.admin_socket_path,
+            admin_key_path: self.admin_key_path,
             shutdown_timeout_secs: self.shutdown_timeout_secs,
             logging: self.logging,
         };

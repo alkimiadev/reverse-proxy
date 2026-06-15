@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
@@ -7,7 +8,8 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
-use reverse_proxy::admin::{start_admin_socket, AdminSocket, AdminSocketError};
+use reverse_proxy::admin::handler::AdminState;
+use reverse_proxy::admin::{load_admin_key, AdminAuthConfig};
 use reverse_proxy::cli;
 use reverse_proxy::config::ConfigReloadHandle;
 use reverse_proxy::config::DynamicConfig;
@@ -91,39 +93,46 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
         config_path.to_string(),
     )?;
 
+    let admin_auth = if !loaded_config.static_config.admin_key_path.is_empty() {
+        match load_admin_key(&loaded_config.static_config.admin_key_path) {
+            Ok(Some(hash)) => Some(Arc::new(AdminAuthConfig { admin_key_hash: hash })),
+            Ok(None) => {
+                warn!("admin key file not found or empty, disabling admin endpoints");
+                None
+            }
+            Err(e) => {
+                warn!("admin key load failed, disabling admin endpoints: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let start_time = Instant::now();
+    let key_hash_arc = admin_auth.as_ref().map(|auth| {
+        Arc::new(ArcSwap::from_pointee(auth.admin_key_hash))
+    });
+
+    let admin_state = admin_auth.map(|_auth| {
+        Arc::new(AdminState {
+            reload_handle: reload_handle.clone(),
+            config_path: config_path.to_string(),
+            start_time,
+            key_hash: key_hash_arc.as_ref().unwrap().clone(),
+        })
+    });
+
     if loaded_config.static_config.health_check_port > 0 {
         let (health_addr, _health_handle) =
-            health::start_health_check_listener(loaded_config.static_config.health_check_port)
+            health::start_health_check_listener(
+                loaded_config.static_config.health_check_port,
+                admin_state,
+                key_hash_arc,
+            )
                 .await
                 .context("failed to bind health check port")?;
         info!(addr = %health_addr, "Health check listener bound");
-    }
-
-    if !loaded_config.static_config.admin_socket_path.is_empty() {
-        let admin_socket = Arc::new(AdminSocket::new(
-            loaded_config.static_config.admin_socket_path.clone(),
-            reload_handle.clone(),
-            config_path.to_string(),
-        ));
-        let admin_socket_clone = admin_socket.clone();
-        let shutdown_for_admin = shutdown.clone();
-        tokio::spawn(async move {
-            if let Err(e) = start_admin_socket(admin_socket_clone, shutdown_for_admin).await {
-                match e {
-                    AdminSocketError::Disabled => {}
-                    AdminSocketError::SocketInUse(path) => {
-                        warn!("admin socket disabled: {} is in use", path);
-                    }
-                    AdminSocketError::BindFailed(msg) => {
-                        error!("admin socket bind failed: {}", msg);
-                    }
-                    AdminSocketError::Io(e) => {
-                        error!("admin socket IO error: {}", e);
-                    }
-                    _ => {}
-                }
-            }
-        });
     }
 
     let mut bound_listeners = Vec::new();
