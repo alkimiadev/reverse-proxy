@@ -84,7 +84,7 @@ mod tests {
             test_fixtures::test_dynamic_config(),
         ));
         let static_config = test_fixtures::test_static_config();
-        let reload_handle = Arc::new(ConfigReloadHandle::new(config_arc, static_config));
+        let reload_handle = Arc::new(ConfigReloadHandle::new(config_arc, static_config, false));
 
         let admin_state = Arc::new(AdminState {
             reload_handle,
@@ -169,7 +169,7 @@ upstream = "127.0.0.1:8080"
             test_fixtures::test_dynamic_config(),
         ));
         let static_config = test_fixtures::test_static_config();
-        let reload_handle = Arc::new(ConfigReloadHandle::new(config_arc, static_config));
+        let reload_handle = Arc::new(ConfigReloadHandle::new(config_arc, static_config, false));
 
         let admin_state = Arc::new(AdminState {
             reload_handle,

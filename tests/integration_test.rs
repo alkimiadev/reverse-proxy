@@ -865,6 +865,7 @@ async fn test_sighup_config_reload_valid_config() {
     let reload_handle = Arc::new(reverse_proxy::config::ConfigReloadHandle::new(
         config_arc.clone(),
         static_config,
+        false,
     ));
 
     let dir = tempfile::tempdir().unwrap();
@@ -892,8 +893,8 @@ https_port = 443
 mode = "acme"
 acme_domains = ["test.local"]
 acme_cache_dir = "/tmp/acme-cache"
-acme_contact = "mailto:admin@test.local"
 acme_directory = "staging"
+acme_contact = "mailto:admin@test.local"
 
 [[listeners.sites]]
 host = "test.local"
@@ -921,6 +922,7 @@ async fn test_sighup_config_reload_invalid_config_keeps_old() {
     let reload_handle = Arc::new(reverse_proxy::config::ConfigReloadHandle::new(
         config_arc.clone(),
         static_config,
+        false,
     ));
 
     let dir = tempfile::tempdir().unwrap();

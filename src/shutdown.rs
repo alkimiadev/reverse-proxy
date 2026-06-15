@@ -85,23 +85,19 @@ pub async fn handle_sighup_reload(
     reload_handle: &Arc<crate::config::ConfigReloadHandle>,
     config_path: &str,
 ) {
-    let config_content = match tokio::fs::read_to_string(config_path).await {
-        Ok(content) => content,
+    let result = crate::config::read_and_validate_config(
+        config_path,
+        reload_handle.cli_allow_wildcard_bind(),
+    )
+    .await;
+
+    let (new_static, new_dynamic) = match result {
+        Ok(configs) => configs,
         Err(e) => {
             tracing::error!(event = "CONFIG_RELOAD", status = "error", error = %e);
             return;
         }
     };
-
-    let full_config = match crate::config::FullConfig::parse(&config_content) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(event = "CONFIG_RELOAD", status = "error", error = %e);
-            return;
-        }
-    };
-
-    let (new_static, new_dynamic) = full_config.into_static_and_dynamic();
 
     match reload_handle.reload(new_static, new_dynamic).await {
         Ok(changed_fields) => {
@@ -170,6 +166,7 @@ mod tests {
         let reload_handle = Arc::new(crate::config::ConfigReloadHandle::new(
             config_arc.clone(),
             static_config,
+            false,
         ));
 
         let dir = tempfile::tempdir().unwrap();
@@ -227,6 +224,7 @@ upstream = "127.0.0.1:8080"
         let reload_handle = Arc::new(crate::config::ConfigReloadHandle::new(
             config_arc.clone(),
             static_config,
+            false,
         ));
 
         let dir = tempfile::tempdir().unwrap();
@@ -253,6 +251,7 @@ upstream = "127.0.0.1:8080"
         let reload_handle = Arc::new(crate::config::ConfigReloadHandle::new(
             config_arc.clone(),
             static_config,
+            false,
         ));
 
         handle_sighup_reload(&reload_handle, "/nonexistent/config.toml").await;

@@ -40,10 +40,26 @@ pub struct RotateKeyResponse {
 }
 
 pub async fn reload_handler(State(state): State<Arc<AdminState>>) -> impl IntoResponse {
-    let config_content = match tokio::fs::read_to_string(&state.config_path).await {
-        Ok(content) => content,
+    let result = crate::config::read_and_validate_config(
+        &state.config_path,
+        state.reload_handle.cli_allow_wildcard_bind(),
+    )
+    .await;
+
+    let (new_static, new_dynamic) = match result {
+        Ok(configs) => configs,
+        Err(crate::config::ReloadError::FileChangedDuringRead) => {
+            tracing::warn!("admin reload: config file changed during read");
+            return (
+                StatusCode::CONFLICT,
+                Json(ReloadResponse {
+                    status: "error",
+                    message: Some("config file changed during read, please retry".to_string()),
+                }),
+            );
+        }
         Err(e) => {
-            tracing::error!("admin reload: failed to read config file: {}", e);
+            tracing::error!("admin reload: config read/validate failed: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ReloadResponse {
@@ -53,22 +69,6 @@ pub async fn reload_handler(State(state): State<Arc<AdminState>>) -> impl IntoRe
             );
         }
     };
-
-    let full_config = match crate::config::FullConfig::parse(&config_content) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("admin reload: failed to parse config file: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ReloadResponse {
-                    status: "error",
-                    message: Some("reload failed".to_string()),
-                }),
-            );
-        }
-    };
-
-    let (new_static, new_dynamic) = full_config.into_static_and_dynamic();
 
     match state.reload_handle.reload(new_static, new_dynamic).await {
         Ok(changed_fields) => {

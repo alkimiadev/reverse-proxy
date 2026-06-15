@@ -85,6 +85,7 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
     let reload_handle = Arc::new(ConfigReloadHandle::new(
         config_arc.clone(),
         loaded_config.static_config.clone(),
+        loaded_config.allow_wildcard_bind,
     ));
 
     reverse_proxy::shutdown::register_signal_handlers(

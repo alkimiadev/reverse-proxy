@@ -112,14 +112,20 @@ pub struct ConfigReloadHandle {
     config: Arc<ArcSwap<DynamicConfig>>,
     static_config: ArcSwap<StaticConfig>,
     reload_mutex: Mutex<()>,
+    cli_allow_wildcard_bind: bool,
 }
 
 impl ConfigReloadHandle {
-    pub fn new(config: Arc<ArcSwap<DynamicConfig>>, static_config: StaticConfig) -> Self {
+    pub fn new(
+        config: Arc<ArcSwap<DynamicConfig>>,
+        static_config: StaticConfig,
+        cli_allow_wildcard_bind: bool,
+    ) -> Self {
         Self {
             config,
             static_config: ArcSwap::from_pointee(static_config),
             reload_mutex: Mutex::new(()),
+            cli_allow_wildcard_bind,
         }
     }
 
@@ -131,6 +137,10 @@ impl ConfigReloadHandle {
         self.static_config.load_full()
     }
 
+    pub fn cli_allow_wildcard_bind(&self) -> bool {
+        self.cli_allow_wildcard_bind
+    }
+
     pub async fn reload(
         &self,
         new_static: StaticConfig,
@@ -138,7 +148,7 @@ impl ConfigReloadHandle {
     ) -> anyhow::Result<Vec<String>> {
         let _guard = self.reload_mutex.lock().await;
 
-        validate(&new_static, &new_dynamic, false).map_err(|errors| {
+        validate(&new_static, &new_dynamic, self.cli_allow_wildcard_bind).map_err(|errors| {
             anyhow::anyhow!(
                 "{}",
                 errors
@@ -193,7 +203,7 @@ mod tests {
         let initial = test_fixtures::test_dynamic_config();
         let config_arc = Arc::new(ArcSwap::from_pointee(initial.clone()));
         let static_config = test_fixtures::test_static_config();
-        let handle = ConfigReloadHandle::new(config_arc.clone(), static_config);
+        let handle = ConfigReloadHandle::new(config_arc.clone(), static_config, false);
 
         let loaded = handle.load();
         assert_eq!(loaded.sites.len(), 1);
@@ -231,7 +241,7 @@ mod tests {
         let initial = test_fixtures::test_dynamic_config();
         let config_arc = Arc::new(ArcSwap::from_pointee(initial.clone()));
         let static_config = test_fixtures::test_static_config();
-        let handle = ConfigReloadHandle::new(config_arc.clone(), static_config);
+        let handle = ConfigReloadHandle::new(config_arc.clone(), static_config, false);
 
         let mut invalid_dynamic = initial.clone();
         invalid_dynamic.rate_limit.requests_per_second = 0;
@@ -250,7 +260,7 @@ mod tests {
         let initial = test_fixtures::test_dynamic_config();
         let config_arc = Arc::new(ArcSwap::from_pointee(initial.clone()));
         let static_config = test_fixtures::test_static_config();
-        let handle = Arc::new(ConfigReloadHandle::new(config_arc.clone(), static_config));
+        let handle = Arc::new(ConfigReloadHandle::new(config_arc.clone(), static_config, false));
 
         let mut handles = Vec::new();
         for i in 1..=5u32 {
@@ -299,7 +309,7 @@ mod tests {
         let initial = test_fixtures::test_dynamic_config();
         let config_arc = Arc::new(ArcSwap::from_pointee(initial.clone()));
         let original_static = test_fixtures::test_static_config();
-        let handle = ConfigReloadHandle::new(config_arc.clone(), original_static.clone());
+        let handle = ConfigReloadHandle::new(config_arc.clone(), original_static.clone(), false);
 
         let mut changed_static = original_static.clone();
         changed_static.health_check_port = 8080;
@@ -322,7 +332,7 @@ mod tests {
         let initial = test_fixtures::test_dynamic_config();
         let config_arc = Arc::new(ArcSwap::from_pointee(initial.clone()));
         let original_static = test_fixtures::test_static_config();
-        let handle = ConfigReloadHandle::new(config_arc.clone(), original_static.clone());
+        let handle = ConfigReloadHandle::new(config_arc.clone(), original_static.clone(), false);
 
         let mut changed_static = original_static.clone();
         changed_static.health_check_port = 8080;
