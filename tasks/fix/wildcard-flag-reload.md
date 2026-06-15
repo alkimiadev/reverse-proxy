@@ -1,7 +1,7 @@
 ---
 id: fix/wildcard-flag-reload
 name: Store cli_allow_wildcard_bind in ConfigReloadHandle for consistent reload validation (ADR-030)
-status: open
+status: pending
 depends_on: []
 scope: narrow
 risk: low

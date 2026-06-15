@@ -1,12 +1,12 @@
 ---
 id: fix/agents-md-project-structure
 name: Update AGENTS.md project structure and common modifications after admin refactor
-status: open
+status: pending
 depends_on: [fix/admin-http-api]
 scope: narrow
 risk: low
-impact: docs
-level: documentation
+impact: isolated
+level: review
 review_findings: []
 adr: [028]
 ---

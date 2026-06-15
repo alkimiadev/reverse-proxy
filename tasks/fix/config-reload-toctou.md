@@ -1,7 +1,7 @@
 ---
 id: fix/config-reload-toctou
 name: Add mtime check to config reload to detect mid-write file changes (ADR-029)
-status: open
+status: pending
 depends_on: []
 scope: narrow
 risk: low

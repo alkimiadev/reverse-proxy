@@ -1,12 +1,12 @@
 ---
 id: fix/review-005-status-update
 name: Update security review #005 status to reflect ADR-028 decision
-status: open
+status: pending
 depends_on: []
 scope: narrow
 risk: low
-impact: docs
-level: documentation
+impact: isolated
+level: review
 review_findings: [C1, C2, C3, W1, W3, W4, S1, S2, S3, S4, S5, S6]
 adr: [028]
 ---

@@ -1,7 +1,7 @@
 ---
 id: fix/admin-http-api
 name: Replace Unix domain socket admin API with authenticated HTTP admin API (ADR-028)
-status: open
+status: pending
 depends_on: []
 scope: broad
 risk: high
