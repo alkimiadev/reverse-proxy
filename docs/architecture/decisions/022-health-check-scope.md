@@ -1,4 +1,4 @@
-# ADR-022: Health Check Scope — Local Port and Admin Socket Only
+# ADR-022: Health Check Scope — Local Port and Admin HTTP Endpoint Only
 
 ## Status
 
@@ -25,8 +25,8 @@ handled exclusively by:
 1. **Local health check port** (default: 9900, bound to `127.0.0.1`) — serves
    `GET /health → 200 OK`. This is the primary health check mechanism for
    container orchestration, load balancers, and monitoring systems.
-2. **Admin socket** (`status` command) — returns process information including
-   uptime and site count.
+ 2. **Admin HTTP endpoint** (`GET /admin/status` with Bearer token) — returns
+    process information including uptime and site count. See ADR-028.
 
 The `/health` route is removed from the main listener entirely. No configurable
 path is needed because the route simply does not exist on the public listener.
@@ -52,5 +52,6 @@ path is needed because the route simply does not exist on the public listener.
 ## References
 
 - ADR-013: Health check on separate local port
+- ADR-028: Authenticated HTTP admin API (admin socket replaced by HTTP endpoint)
 - OQ-08: Resolved by this ADR
 - Implementation review finding W5 (hardcoded `/health` path)

@@ -56,10 +56,11 @@ to consume directly from the host filesystem.
    and `journalctl`). File logging is the authoritative source for fail2ban
    because it avoids the fragility of Docker log driver parsing.
 
-5. **ACME state and admin socket are volume-mounted.** The ACME cache directory
-   (`/var/lib/reverse-proxy/acme-cache/`) and admin socket
-   (`/run/reverse-proxy/admin.sock`) are mounted as volumes so state persists
-   across container restarts and the host can send reload commands.
+ 5. **ACME state and admin key are volume-mounted.** The ACME cache directory
+    (`/var/lib/reverse-proxy/acme-cache/`) and admin key file
+    (`/etc/reverse-proxy/admin-key`) are mounted as volumes so state persists
+    across container restarts and the host can send authenticated reload commands
+    (ADR-028).
 
 6. **Health checks use Docker's native mechanism.** The health check endpoint
    on port 9900 (localhost only) is used directly by Docker's `HEALTHCHECK`

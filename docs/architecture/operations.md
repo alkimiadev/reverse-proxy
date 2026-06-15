@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-12
+last_updated: 2026-06-14
 ---
 
 # Operations
@@ -205,12 +205,17 @@ GET http://127.0.0.1:9900/health → 200 OK (empty body)
 The port is configurable via `health_check_port` in StaticConfig. Setting it
 to `0` disables the health check listener entirely.
 
-The admin socket's `status` command provides an additional health/status
+The admin HTTP endpoint's `status` command provides an additional health/status
 mechanism that returns process information:
 
 ```
-{"status": "ok", "uptime_secs": 1234, "sites": 2}
+GET http://127.0.0.1:9900/admin/status
+Authorization: Bearer <admin-key>
+
+→ {"status": "ok", "uptime_secs": 1234, "sites": 2}
 ```
+
+Requires Bearer token authentication. See ADR-028 for details.
 
 ### What It Checks
 
@@ -276,45 +281,68 @@ The proxy handles three signals via `signal-hook` (see [ADR-009](decisions/009-s
   for in-flight requests to complete (up to a configurable timeout), then exit.
 - **SIGHUP**: Config reload. Re-read the config file, validate, and swap
   DynamicConfig if valid. No feedback on success or failure.
-- **Admin socket reload**: Send `reload` command via the Unix domain socket
-  (default: `/run/reverse-proxy/admin.sock`). Returns structured response
-  indicating success or failure. See ADR-014 for details.
+- **Admin HTTP endpoint**: Send `POST /admin/reload` with a Bearer token to the
+  health check listener (`http://127.0.0.1:9900/admin/reload`). Returns
+  structured response indicating success or failure. See ADR-028 for details.
 
 ### SIGHUP for Config Reload
 
 SIGHUP triggers config reload (see [config.md](config.md) for details). The
 process does not exit on SIGHUP.
 
-### Admin Socket for Config Reload
+### Admin HTTP Endpoint for Config Reload
 
-The admin Unix domain socket provides programmatic config reload with feedback.
-This is useful for CI/CD pipelines and automation tools. See ADR-014 for the
-rationale.
+The admin HTTP endpoint provides programmatic config reload with feedback
+and authentication. This is useful for CI/CD pipelines and automation tools.
+See ADR-028 for the rationale and security model.
 
-**Protocol:**
+**Authentication**: All `/admin/*` endpoints require a Bearer token in the
+`Authorization` header. The token is compared against a SHA-256 hash of the
+admin key file contents using constant-time comparison (`subtle::ConstantTimeEq`)
+to prevent timing attacks.
 
-- **Connection lifecycle**: One command per connection. Client connects, sends
-  one newline-terminated command, receives one newline-terminated JSON
-  response, then the server closes the connection.
-- **Message framing**: Newline-delimited (`\n`). Responses end with `\n`.
-- **Resource limits** (see ADR-027):
-  - Read timeout: 5 seconds. Connections that send no complete command within
-    5 seconds are closed. The timeout is logged at `debug` level.
-  - Line length limit: 4096 bytes. Connections that send more than 4096 bytes
-    without a newline are closed. The event is logged at `warn` level.
-- **Commands**:
-  - `reload` — Re-read config file, validate, and swap DynamicConfig. Returns
-    `{"status": "ok"}` or `{"status": "error", "message": "..."}`.
-  - `status` — Return basic process info. Returns
-    `{"status": "ok", "uptime_secs": 1234, "sites": 2}`.
-- **Error responses**: Unrecognized commands return
-  `{"status": "error", "message": "unknown command: <cmd>"}`. Invalid or empty
-  input returns `{"status": "error", "message": "invalid input"}`.
-- **Concurrency**: Multiple clients can connect simultaneously, but reload
-  operations are serialized (see Config Reload section in config.md).
-- **Socket cleanup**: The proxy removes any existing socket file at startup
-  before binding. If the file exists and another process is listening, a warning
-  is logged and the admin socket is disabled (but the proxy continues starting).
+**Key management**: The admin key is stored in a file on disk (specified by
+`admin_key_path` in StaticConfig, default: `/etc/reverse-proxy/admin-key`).
+The proxy reads this file once at startup, hashes its contents with SHA-256,
+and stores only the hash in memory. The plaintext key is never held in memory
+after startup. Setting `admin_key_path` to an empty string disables all admin
+endpoints.
+
+**Endpoints**:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/admin/reload` | Trigger config reload. Returns `{"status": "ok"}` or `{"status": "error", "message": "..."}` |
+| GET | `/admin/status` | Return process info: `{"status": "ok", "uptime_secs": N, "sites": N}` |
+| POST | `/admin/rotate-key` | Generate new random key, return it, replace stored hash |
+
+**Error responses**: Admin endpoint errors return generic messages — no
+filesystem paths, no config structure details. Full error information is
+logged server-side only. When admin endpoints are disabled (empty
+`admin_key_path`), `/admin/*` returns 404 (endpoint appears not to exist).
+Wrong or missing Bearer token returns 401.
+
+**Key rotation**: `/admin/rotate-key` generates a new 256-bit random key,
+returns the plaintext key in the response, and replaces the stored SHA-256
+hash in memory. In-memory rotation does **not** persist across restarts — on
+restart, the proxy re-reads the key file. To make rotation permanent, the
+operator must also update the key file on disk.
+
+**Concurrency**: Reload operations are serialized (see Config Reload section
+in config.md). Multiple concurrent `/admin/reload` requests are handled
+correctly.
+
+**Config file TOCTOU protection**: Both SIGHUP and admin HTTP reload compare
+the config file's modification timestamp before and after reading. If the
+file changed during the read, the reload is rejected with a "please retry"
+message. Operators should use atomic file replacement (write to a temp file,
+then `rename()` over the target) for safe config rotation. See ADR-029.
+
+**Reload validation consistency**: The `cli_allow_wildcard_bind` flag is
+stored in `ConfigReloadHandle` at startup, ensuring that reload validation
+uses the same flag as startup validation. If the proxy was started with
+`--allow-wildcard-bind`, reload will also allow wildcard bind addresses.
+See ADR-030.
 
 ### Shutdown Sequence
 
@@ -339,7 +367,7 @@ On SIGTERM or SIGINT, the proxy performs a graceful shutdown:
 4. **Force-close remaining connections** — After the timeout, any remaining
    connections are forcefully closed via TCP RST.
 5. **Cancel background tasks** — ACME renewal tasks, rate limiter eviction task,
-   and admin socket listener are all cancelled.
+   and rate limiter eviction task are all cancelled.
 6. **Exit with code 0**.
 
 The `shutdown_timeout_secs` is configurable in StaticConfig (default: 30
@@ -427,7 +455,7 @@ override is required for this configuration (see ADR-016, ADR-020).
 | `/etc/reverse-proxy/config.toml` | Config file (read-only) | Proxy configuration |
 | `/var/lib/reverse-proxy/acme-cache/` | ACME state directory | Certificate persistence across restarts |
 | `/var/log/reverse-proxy/` | Log directory | fail2ban reads from host |
-| `/run/reverse-proxy/admin.sock` | Admin socket | Host-side config reload commands |
+| `/etc/reverse-proxy/admin-key` | Admin key file | Bearer token for admin endpoints (read-only) |
 
 ### Docker Compose Example
 
@@ -448,7 +476,7 @@ services:
       - /etc/reverse-proxy/config.toml:/etc/reverse-proxy/config.toml:ro
       - /var/lib/reverse-proxy/acme-cache:/var/lib/reverse-proxy/acme-cache
       - /var/log/reverse-proxy:/var/log/reverse-proxy
-      - /run/reverse-proxy:/run/reverse-proxy
+      - /etc/reverse-proxy/admin-key:/etc/reverse-proxy/admin-key:ro
     networks:
       - proxy-net
     healthcheck:
@@ -495,7 +523,7 @@ Corresponding proxy config (inside the container):
 ```toml
 allow_wildcard_bind = true
 health_check_port = 9900
-admin_socket_path = "/run/reverse-proxy/admin.sock"
+admin_key_path = "/etc/reverse-proxy/admin-key"
 
 [logging]
 level = "info"
@@ -576,10 +604,10 @@ and correct dependency initialization:
 4. **Bind health check port** (if enabled) — Bind `127.0.0.1:{health_check_port}`.
    Fail-fast if bind fails.
 
-5. **Bind admin socket** (if enabled) — Remove any stale socket file first, then
-   bind the Unix domain socket. If the socket file exists and another process is
-   listening, log a warning and fail the admin socket (but continue starting —
-   the admin socket is non-critical).
+5. **Read admin key** (if enabled) — Read the admin key file, compute SHA-256
+   hash, and store the hash in memory for Bearer token authentication. If the
+   file is not readable, log a warning and disable admin endpoints (but
+   continue starting — admin endpoints are non-critical).
 
 6. **Bind all listener ports** — For each listener: bind HTTP port (if enabled)
    and HTTPS port. If any bind fails, fail-fast and exit. All ports are bound
@@ -593,7 +621,7 @@ and correct dependency initialization:
 8. **Start TCP listeners** — Begin accepting connections on all bound ports.
 
 9. **Start background tasks** — ACME renewal tasks (per listener in ACME mode),
-   rate limiter eviction task, signal handler task, admin socket handler task.
+   rate limiter eviction task, signal handler task.
 
 10. **Signal readiness** — Send `sd_notify("READY=1")` to systemd (if running
     under systemd).
@@ -613,11 +641,14 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [007](decisions/007-custom-log-format.md) | Custom structured log format | key=value pairs with RATE_LIMIT prefix for fail2ban |
 | [009](decisions/009-signal-handling.md) | Signal handling strategy | signal-hook for SIGTERM/SIGINT/SIGHUP |
 | [013](decisions/013-health-check-port.md) | Health check on separate local port | Localhost-only HTTP health check, configurable port |
-| [014](decisions/014-unix-socket-reload.md) | Unix domain socket config reload API | Programmatic reload with success/failure feedback |
+| [014](decisions/014-unix-socket-reload.md) | ~~Unix domain socket config reload API~~ | ~~Programmatic reload with success/failure feedback~~ (Superseded by ADR-028) |
 | [020](decisions/020-container-deployment.md) | Container deployment model | Defense-in-depth via container isolation; file-primary logging |
 | [024](decisions/024-ansi-disabled-logging.md) | ANSI-disabled logging | All log output uses `with_ansi(false)` for fail2ban and Docker compatibility |
 | [025](decisions/025-rate-limiter-ip-source.md) | Rate limiter IP source | ConnectInfo only, never client-supplied X-Forwarded-For |
-| [027](decisions/027-admin-socket-resource-limits.md) | Admin socket resource limits | 5s read timeout, 4096 byte line length limit |
+| [027](decisions/027-admin-socket-resource-limits.md) | ~~Admin socket resource limits~~ | ~~5s read timeout, 4096 byte line length limit~~ (Deprecated by ADR-028) |
+| [028](decisions/028-admin-http-api.md) | Authenticated HTTP admin API | Bearer token auth on health check port; replaces Unix domain socket |
+| [029](decisions/029-config-reload-toctou.md) | Config file TOCTOU mitigation | mtime check before and after config read; reject reload if file changed |
+| [030](decisions/030-wildcard-flag-consistency.md) | Store cli_allow_wildcard_bind in ConfigReloadHandle | Consistent validation between startup and reload |
 
 ## Open Questions
 
@@ -628,9 +659,11 @@ questions affecting this document:
   — ADR-013: separate local port, default 9900, localhost only)
 - ~~**OQ-08**: Should `/health` use a less common path?~~ (resolved — ADR-022:
   no `/health` route on the main listener at all; health checking is via port
-  9900 and admin socket only)
+  9900 and admin HTTP endpoint only)
 - ~~**OQ-12**: Should request access logging be mandatory or optional?~~ (resolved
   — access logging is mandatory and always-on at `info` level; no configuration
   option to disable it)
 - **OQ-14**: Should rate limiter eviction interval and max age be configurable?
+  (see [open-questions.md](open-questions.md))
+- **OQ-15**: Should admin key rotation persist across restarts?
   (see [open-questions.md](open-questions.md))

@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-12
+last_updated: 2026-06-14
 ---
 
 # Open Questions
@@ -51,8 +51,8 @@ last_updated: 2026-06-12
 - **Resolution**: Add a configurable local health check port (default: 9900)
   bound to `127.0.0.1` only. Health checks work even when TLS is misconfigured.
   There is no `/health` route on the main HTTPS listener — health checking is
-  handled exclusively by the local port and admin socket. See ADR-013 and
-  ADR-022.
+  handled exclusively by the local port and admin HTTP endpoint. See ADR-013,
+  ADR-022, and ADR-028.
 - **Cross-references**: ADR-013, ADR-022
 
 ## Configuration
@@ -62,10 +62,13 @@ last_updated: 2026-06-12
 - **Origin**: [config.md](config.md)
 - **Status**: resolved
 - **Priority**: low
-- **Resolution**: Yes. Add a Unix domain socket admin API alongside SIGHUP.
-  The socket accepts a `reload` command and returns structured success/failure
-  responses. SIGHUP is retained as a fallback. See ADR-014.
-- **Cross-references**: ADR-014
+- **Resolution**: Yes, via ADR-014 (Unix domain socket). The socket has since
+  been replaced by an authenticated HTTP admin API (ADR-028) due to security
+  vulnerabilities identified in review #005. SIGHUP is retained as a fallback.
+  Admin HTTP endpoints (`/admin/reload`, `/admin/status`, `/admin/rotate-key`)
+  are served on the health check listener at `127.0.0.1:9900` behind Bearer
+  token authentication.
+- **Cross-references**: ADR-014 (superseded), ADR-028
 
 ## Deployment
 
@@ -100,14 +103,14 @@ last_updated: 2026-06-12
 - **Priority**: medium
 - **Resolution**: The `/health` route does not belong on the main listener at
   all. Health checking is an operational concern served by the dedicated local
-  port (9900) and the admin socket's `status` command — not by intercepting
+  port (9900) and the admin HTTP endpoint's `/admin/status` — not by intercepting
   traffic on the public-facing proxy. Serving `/health` on the main listener
   creates collision with upstream applications, requires special-case routing
   logic before host-based matching, and is architecturally wrong: the main
   listener's job is to proxy requests, not to serve operational endpoints. The
-  local health check port (bound to `127.0.0.1:9900`) and the admin socket are
-  the sole health/status mechanisms. See ADR-022.
-- **Cross-references**: ADR-013, ADR-022
+  local health check port (bound to `127.0.0.1:9900`) and the admin HTTP endpoint
+  are the sole health/status mechanisms. See ADR-022 and ADR-028.
+- **Cross-references**: ADR-013, ADR-022, ADR-028
 
 ### ~~OQ-09: How should `upstream_connect_timeout_secs` be enforced?~~
 
@@ -201,3 +204,29 @@ last_updated: 2026-06-12
   (hot-reloadable via ArcSwap) if added. For Phase 1, the hardcoded values
   are reasonable defaults.
 - **Cross-references**: ADR-006
+
+## Security
+
+### OQ-15: Should admin key rotation persist across restarts?
+
+- **Origin**: [operations.md](operations.md), ADR-028
+- **Status**: open
+- **Priority**: medium
+- **Details**: The `/admin/rotate-key` endpoint generates a new random key and
+  replaces the stored hash in memory, but this change does not persist across
+  restarts. On restart, the proxy re-reads the admin key file. To make rotation
+  permanent, the operator must also update the key file on disk separately.
+  Options for persisting rotation: (1) write the new hash to the key file on
+  rotation (breaks the "read-only key file" model), (2) write a separate state
+  file with the rotated hash, (3) document the current behavior and accept it
+  (operator updates the file manually after rotation). Option 3 is simplest
+  and maintains the read-only semantics of the key file mount.
+- **Cross-references**: ADR-028
+
+### ~~OQ-16: Should the admin HTTP API use POST for /admin/reload instead of GET?~~
+
+- **Origin**: ADR-28 specifies GET for all admin endpoints, but HTTP semantics suggest POST for state-changing operations (reload).
+- **Status**: resolved
+- **Priority**: low
+- **Resolution**: State-changing admin endpoints (`/admin/reload`, `/admin/rotate-key`) use POST. Read-only endpoints (`/admin/status`, `/health`) use GET. This follows standard HTTP semantics — GET requests should be safe and idempotent, and triggering a config reload is neither. The convenience argument (shorter curl command) does not justify violating HTTP method semantics. See ADR-028.
+- **Cross-references**: ADR-028

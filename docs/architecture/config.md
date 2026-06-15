@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-12
+last_updated: 2026-06-14
 ---
 
 # Configuration
@@ -36,7 +36,7 @@ config.toml
 │  (immutable)         │
 │                      │
 │  health_check_port   │
-│  admin_socket_path   │
+│  admin_key_path      │
 │  log_level           │
 │  log_format          │
 │                      │
@@ -88,7 +88,7 @@ Immutable after startup. Changes require a process restart.
 | `listeners` | `Vec<ListenerConfig>` | Independent TLS endpoints, each with its own bind address and TLS config (see ADR-019) |
 | `allow_wildcard_bind` | `bool` | Allow `0.0.0.0` as a bind address. Required for container deployments. Default: `false` (see ADR-016, ADR-020) |
 | `health_check_port` | `u16` | Port for local health check endpoint (default: `9900`; set to `0` to disable; bound to `127.0.0.1` only; see ADR-013, ADR-022) |
-| `admin_socket_path` | `String` | Unix domain socket path for admin API (default: `/run/reverse-proxy/admin.sock`; empty string to disable; see ADR-014) |
+| `admin_key_path` | `String` | Path to file containing the admin Bearer token (default: `/etc/reverse-proxy/admin-key`; empty string to disable admin endpoints; see ADR-028) |
 | `shutdown_timeout_secs` | `u64` | Maximum seconds to wait for in-flight requests during graceful shutdown (default: `30`) |
 | `logging` | `LoggingConfig` | Logging configuration (see below) |
 
@@ -178,7 +178,7 @@ Phase 2.
 |-------|------|---------|----------|
 | `allow_wildcard_bind` | `bool` | `false` | No |
 | `health_check_port` | `u16` | `9900` | No |
-| `admin_socket_path` | `String` | `/run/reverse-proxy/admin.sock` | No |
+| `admin_key_path` | `String` | `/etc/reverse-proxy/admin-key` | No |
 | `shutdown_timeout_secs` | `u64` | `30` | No |
 | `logging.level` | `String` | `"info"` | No |
 | `logging.format` | `String` | `"text"` | No |
@@ -220,10 +220,10 @@ Config reload is triggered by two mechanisms:
    valid. Simple and well-understood, but provides no feedback on success or
    failure.
 
-2. **Admin socket**: The `reload` command via the admin Unix domain socket
-   performs the same action as SIGHUP but returns a structured response
-   indicating success or failure with an error message. See ADR-014 for
-   details.
+2. **Admin HTTP endpoint**: The `POST /admin/reload` endpoint on the health
+   check listener (`127.0.0.1:9900`) performs the same action as SIGHUP but
+   returns a structured response indicating success or failure. Requires a
+   Bearer token from the admin key file. See ADR-028 for details.
 
 Both mechanisms converge on the same code path:
 1. Re-read the config file from disk
@@ -233,7 +233,7 @@ Both mechanisms converge on the same code path:
 
 ### Static Config Changes During Reload
 
-When the config file is reloaded (via SIGHUP or admin socket), the entire file
+When the config file is reloaded (via SIGHUP or admin HTTP endpoint), the entire file
 is read and validated — both static and dynamic portions. This provides early
 error detection for misconfigurations that would prevent a restart from
 succeeding.
@@ -259,16 +259,36 @@ reloads, the operator should see the warning only once, not on every reload.
 ### Reload Serialization
 
 Reload operations are serialized using a `tokio::sync::Mutex` on the reload
-code path. If a reload is in progress (triggered by SIGHUP or admin socket) and
+code path. If a reload is in progress (triggered by SIGHUP or admin HTTP) and
 a second reload is requested, the second request waits for the first to
 complete, then re-reads the config file (getting the latest version) and
 proceeds. This prevents race conditions where two concurrent reloads could apply
 an older config over a newer one.
 
+### Config File TOCTOU Protection
+
+Both SIGHUP and admin HTTP reload paths compare the config file's modification
+timestamp before and after reading. If the file changed during the read, the
+reload is rejected with a "please retry" message. This detects the common case
+of a config management tool mid-write. See ADR-029.
+
+Operators should use atomic file replacement for config rotation: write to a
+temporary file in the same directory, then `rename()` over the target. This
+is the standard safe pattern and is what tools like Ansible do with their
+`copy` module's `validate` parameter.
+
+### Reload Validation Consistency
+
+The `cli_allow_wildcard_bind` flag is stored in `ConfigReloadHandle` at startup
+and used for reload validation, ensuring that a config accepted at startup
+will also be accepted on reload. If the proxy was started with
+`--allow-wildcard-bind`, reload will also allow `0.0.0.0` bind addresses. See
+ADR-030.
+
 ### Out of Scope: File Watching
 
 Automatic file watching (inotify, fsnotify, etc.) is out of scope for Phase 1.
-Config reload is triggered explicitly by SIGHUP or admin socket command. File
+Config reload is triggered explicitly by SIGHUP or admin HTTP endpoint. File
 watching adds complexity (debouncing, handling atomic renames, handling editor
 swap files) that is not justified for a single-instance proxy with infrequent
 config changes.
@@ -285,7 +305,7 @@ certificate:
 
 # Global settings
 health_check_port = 9900     # Local health check (0 to disable)
-admin_socket_path = "/run/reverse-proxy/admin.sock"  # Empty string to disable
+admin_key_path = "/etc/reverse-proxy/admin-key"  # Empty string to disable
 
 [logging]
 level = "info"
@@ -343,7 +363,7 @@ A single listener serving multiple domains with one SAN certificate:
 ```toml
 # Global settings
 health_check_port = 9900
-admin_socket_path = "/run/reverse-proxy/admin.sock"
+admin_key_path = "/etc/reverse-proxy/admin-key"
 
 [logging]
 level = "info"
@@ -425,6 +445,9 @@ On startup, the config is validated:
     (e.g., `"mailto:admin@example.com"`). Values like `"mailto:"` (empty
     email) or `"mailto:user"` (no `@`) are rejected. Let's Encrypt requires
     a contact email for production certificate requests.
+20. `admin_key_path` must be either an empty string (disabled) or an absolute
+    path. Relative paths and paths containing `..` are rejected. This prevents
+    path traversal attacks on the admin key file.
 
 On SIGHUP reload, the same validation applies. If the new config fails
 validation, the reload is rejected and the old config remains active. An error
@@ -445,13 +468,16 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [010](decisions/010-multi-site-phase1.md) | Multi-site in Phase 1 | Multiple domains from initial release |
 | [011](decisions/011-multi-domain-tls.md) | Multi-domain TLS config | Single SAN certificate covering all domains |
 | [013](decisions/013-health-check-port.md) | Health check on separate local port | Localhost-only HTTP health check, configurable port |
-| [014](decisions/014-unix-socket-reload.md) | Unix domain socket config reload API | Programmatic reload with success/failure feedback |
+| [014](decisions/014-unix-socket-reload.md) | ~~Unix domain socket config reload API~~ | ~~Programmatic reload with success/failure feedback~~ (Superseded by ADR-028) |
 | [015](decisions/015-per-site-timeouts.md) | Per-site upstream timeouts with defaults | 5s connect / 60s request defaults, per-site overrides |
 | [016](decisions/016-explicit-bind-address.md) | Explicit bind address required | Rejects `0.0.0.0` to prevent accidental exposure |
 | [019](decisions/019-multi-config-listeners.md) | Multi-config listeners | `[[listeners]]` supporting both dedicated-IP and shared-IP deployment models |
 | [020](decisions/020-container-deployment.md) | Container deployment model | Flexible upstream addressing; `allow_wildcard_bind` override for containers |
 | [026](decisions/026-connector-timeout-ceiling.md) | Connector timeout ceiling | 30s ceiling on connector, per-site timeout via tokio::time::timeout |
-| [027](decisions/027-admin-socket-resource-limits.md) | Admin socket resource limits | 5s read timeout, 4096 byte line length limit |
+| [027](decisions/027-admin-socket-resource-limits.md) | ~~Admin socket resource limits~~ | ~~5s read timeout, 4096 byte line length limit~~ (Deprecated by ADR-028) |
+| [028](decisions/028-admin-http-api.md) | Authenticated HTTP admin API | Bearer token auth on health check port; replaces Unix domain socket |
+| [029](decisions/029-config-reload-toctou.md) | Config file TOCTOU mitigation | mtime check before and after config read; reject reload if file changed |
+| [030](decisions/030-wildcard-flag-consistency.md) | Store cli_allow_wildcard_bind in ConfigReloadHandle | Consistent validation between startup and reload |
 
 ## Open Questions
 
@@ -459,7 +485,8 @@ Open questions are tracked in [open-questions.md](open-questions.md). Key
 questions affecting this document:
 
 - ~~**OQ-04**: Should config reload support a Unix domain socket API in addition
-  to SIGHUP?~~ (resolved — ADR-014: Unix domain socket admin API added)
+  to SIGHUP?~~ (resolved — ADR-014, now superseded by ADR-028: authenticated
+  HTTP admin API)
 - ~~**OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual
   domains?~~ (resolved — ADR-019: `[[listeners]]` with per-listener TLS config)
 - **OQ-13**: Should `acme_contact` support multiple email addresses? (see

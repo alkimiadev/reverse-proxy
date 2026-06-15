@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-12
+last_updated: 2026-06-14
 ---
 
 # Overview
@@ -57,7 +57,7 @@ details.
   - 100 MB body size limit (global)
   - Configurable bind addresses (must be explicit, no `0.0.0.0`)
   - Local health check endpoint on separate port (default: 9900, localhost only)
-  - Unix domain socket admin API for config reload with feedback
+   - Authenticated HTTP admin API for config reload with feedback (ADR-028)
   - Graceful shutdown (SIGTERM handling with in-flight request drain)
   - Systemd unit file
   - Dual licensing: MIT OR Apache-2.0
@@ -115,17 +115,17 @@ details.
                         │  │     └─ Rate limiting, headers     │   │
                         │  └────────────────────────────────┘   │
                         │                                      │
-                        │  /health → 200 OK (port 9900)        │
-                        │  Admin socket (Unix domain)           │
-                       └────────────────────────────────────┘
-                            │              │
-                     ┌──────┘              └──────┐
-                     │                             │
-              Docker network              Volume mounts:
-              (upstream DNS)            ├─ config (ro)
-              ├─ gitea:3000              ├─ ACME cache (rw)
-              ├─ app:8080                ├─ log dir (rw, fail2ban)
-                                         └─ admin socket (rw)
+                         │  /health → 200 OK (port 9900)        │
+                         │  /admin/* → Bearer token auth         │
+                        └────────────────────────────────────┘
+                             │              
+                      ┌──────┘              
+                      │                             
+               Docker network              Volume mounts:
+               (upstream DNS)            ├─ config (ro)
+               ├─ gitea:3000              ├─ ACME cache (rw)
+               ├─ app:8080                ├─ log dir (rw, fail2ban)
+                                          └─ admin key (ro)
 ```
 
 Each listener has its own `axum::Router` instance with its own middleware stack,
@@ -133,8 +133,7 @@ but all routers share `Arc<ArcSwap<DynamicConfig>>` and
 `Arc<Mutex<HashMap<IpAddr, TokenBucket>>>` via axum State. Site routing is
 global: the `Host` header is matched against a single routing table collected
 from all listeners' site definitions. Hostnames must be unique across all
-listeners. Hostnames must be unique across all listeners — see Security & Bug
-Review #003, finding C1, resolved by ADR-025.
+listeners — see Security & Bug Review #003, finding C1, resolved by ADR-025.
 
 In container deployments (ADR-020), the proxy runs in a minimal container with
 `0.0.0.0` bind address and Docker port publishing. Upstream addresses use Docker
@@ -171,6 +170,8 @@ loopback, LAN, and tunnel endpoints for multi-host deployments.
 | `rustls-pki-types` | 1 | TLS types | CertificateDer, PrivateKeyDer |
 | `clap` | 4 | CLI arguments | Server startup options |
 | `signal-hook` | 0.3 | Signal handling | SIGTERM/SIGINT for shutdown, SIGHUP for config reload |
+| `subtle` | 2 | Constant-time comparison | Bearer token auth for admin endpoints |
+| `sha2` | 0.10 | SHA-256 hashing | Admin key hashing at startup |
 
 Versions listed are minimum major versions. Implementation should pin exact
 versions in `Cargo.toml` per standard Rust practice.
@@ -207,7 +208,7 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [011](decisions/011-multi-domain-tls.md) | Multi-domain TLS config | Single SAN certificate covering all domains via rustls-acme |
 | [012](decisions/012-cipher-suite-restriction.md) | Restrict cipher suites | Match nginx scope: ECDHE-AES-GCM for TLS 1.2, all TLS 1.3 |
 | [013](decisions/013-health-check-port.md) | Health check on separate local port | Localhost-only HTTP health check, configurable port |
-| [014](decisions/014-unix-socket-reload.md) | Unix domain socket config reload API | Programmatic reload with success/failure feedback |
+| [014](decisions/014-unix-socket-reload.md) | ~~Unix domain socket config reload API~~ | ~~Programmatic reload with success/failure feedback~~ (Superseded by ADR-028) |
 | [015](decisions/015-per-site-timeouts.md) | Per-site upstream timeouts with defaults | 5s connect / 60s request defaults, per-site overrides |
 | [016](decisions/016-explicit-bind-address.md) | Explicit bind address required | Rejects `0.0.0.0` to prevent accidental exposure |
 | [017](decisions/017-upstream-connection-defaults.md) | Upstream connection defaults | HTTP/1.1, no redirects, connection pooling |
@@ -215,12 +216,15 @@ All design decisions are documented as ADRs in [decisions/](decisions/).
 | [019](decisions/019-multi-config-listeners.md) | Multi-config listeners | `[[listeners]]` supporting both dedicated-IP and shared-IP deployment models |
 | [020](decisions/020-container-deployment.md) | Container deployment model | Defense-in-depth via container isolation; file-primary logging; flexible upstream addressing |
 | [021](decisions/021-x-forwarded-for-edge-proxy.md) | X-Forwarded-For edge proxy model | Replace, don't append — proxy is the edge, no trusted upstream proxies |
-| [022](decisions/022-health-check-scope.md) | Health check scope — local port and admin socket only | No `/health` route on main listener; health check is port 9900/admin socket only |
+| [022](decisions/022-health-check-scope.md) | Health check scope — local port and admin HTTP only | No `/health` route on main listener; health check is port 9900/admin HTTP only |
 | [023](decisions/023-http2-client-facing.md) | HTTP/2 client-facing support | ALPN-based protocol detection; HTTP/2 to clients, HTTP/1.1 to upstreams |
 | [024](decisions/024-ansi-disabled-logging.md) | ANSI-disabled logging | All log output uses `with_ansi(false)` for fail2ban and Docker compatibility |
 | [025](decisions/025-rate-limiter-ip-source.md) | Rate limiter IP source | ConnectInfo only, never client-supplied X-Forwarded-For |
 | [026](decisions/026-connector-timeout-ceiling.md) | Connector timeout ceiling | 30s ceiling on connector, per-site timeout via tokio::time::timeout |
-| [027](decisions/027-admin-socket-resource-limits.md) | Admin socket resource limits | 5s read timeout, 4096 byte line length limit |
+| [027](decisions/027-admin-socket-resource-limits.md) | ~~Admin socket resource limits~~ | ~~5s read timeout, 4096 byte line length limit~~ (Deprecated — socket removed by ADR-028) |
+| [028](decisions/028-admin-http-api.md) | Authenticated HTTP admin API | Bearer token auth on health check port; replaces Unix domain socket |
+| [029](decisions/029-config-reload-toctou.md) | Config file TOCTOU mitigation | mtime check before and after config read; reject reload if file changed |
+| [030](decisions/030-wildcard-flag-consistency.md) | Store cli_allow_wildcard_bind in ConfigReloadHandle | Consistent validation between startup and reload |
 
 ## Open Questions
 
@@ -231,6 +235,7 @@ questions affecting this document have been resolved:
 - ~~**OQ-03**: Should the health check endpoint be on a separate port?~~ (resolved — ADR-013)
 - ~~**OQ-05**: Should the proxy bind to multiple addresses?~~ (resolved — single `bind_addr` per listener)
 - ~~**OQ-07**: Should per-site TLS overrides be supported for mixed ACME/manual domains?~~ (resolved — ADR-019: `[[listeners]]` with per-listener TLS config)
-- ~~**OQ-08**: Should `/health` use a less common path?~~ (resolved — ADR-022: no `/health` route on main listener; health check is port 9900/admin socket only)
+- ~~**OQ-08**: Should `/health` use a less common path?~~ (resolved — ADR-022: no `/health` route on main listener; health check is port 9900/admin HTTP only)
 - **OQ-13**: Should `acme_contact` support multiple email addresses? (see [open-questions.md](open-questions.md))
 - **OQ-14**: Should rate limiter eviction interval and max age be configurable? (see [open-questions.md](open-questions.md))
+- **OQ-15**: Should admin key rotation persist across restarts? (see [open-questions.md](open-questions.md))

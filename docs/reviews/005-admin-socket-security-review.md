@@ -1,6 +1,6 @@
 ---
-status: draft
-last_updated: 2026-06-14
+status: resolved
+last_updated: 2026-06-15
 reviewed_code:
   - src/admin/socket.rs
   - src/admin/mod.rs
@@ -19,6 +19,29 @@ based_on: docs/reviews/004-post-fix-review.md
 ---
 
 # Admin Socket Security Review #005
+
+## Resolution
+
+This review's architectural recommendation (replace Unix domain socket with
+authenticated HTTP admin endpoint) has been accepted and implemented as
+ADR-028. Each finding is resolved as follows:
+
+| Finding | Resolution |
+|---------|------------|
+| C1 (symlink race) | **Resolved by ADR-028** — no socket file management at all |
+| C2 (no authentication) | **Resolved by ADR-028** — Bearer token with constant-time comparison |
+| C3 (info leak) | **Resolved by ADR-028** — generic error messages, details logged server-side |
+| W1 (no conn limit) | **Resolved by ADR-028** — axum/TCP backlog handles this naturally |
+| W2 (config TOCTOU) | **Tracked separately** — ADR-029, task `fix/config-reload-toctou` |
+| W3 (path validation) | **Resolved by ADR-028** — no socket path to validate; `admin_key_path` validation added (config.md rule 20) |
+| W4 (is_socket_active side effect) | **Resolved by ADR-028** — no stale socket detection needed |
+| W5 (wildcard flag) | **Tracked separately** — ADR-030, task `fix/wildcard-flag-reload` |
+| W6 (changed_fields in response) | **Will be addressed** — `fix/admin-http-api` task includes `changed_fields` in `/admin/reload` response |
+| W7 (health check port recon) | **Accepted risk** — localhost-only, minimal information. Admin endpoints add authentication |
+| S1–S6 (suggestions) | **Resolved by ADR-028** — all suggestions relate to the socket, which is removed |
+
+Implementation tasks: `fix/admin-http-api`, `fix/config-reload-toctou`,
+`fix/wildcard-flag-reload`.
 
 ## Purpose
 
@@ -661,7 +684,7 @@ Replace the Unix domain socket admin API with authenticated HTTP endpoints on
 the existing health check listener:
 
 ```
-GET  http://127.0.0.1:9900/admin/reload  →  triggers config reload
+POST  http://127.0.0.1:9900/admin/reload  →  triggers config reload
 GET  http://127.0.0.1:9900/admin/status   →  returns uptime + site count
 ```
 
@@ -745,7 +768,7 @@ ADMIN_KEY=your-secure-random-token-here
 
 **Added:**
 - `src/admin/auth.rs` — Bearer token middleware with `subtle::ConstantTimeEq`
-- `src/admin/handler.rs` — HTTP handlers for `/admin/reload` and `/admin/status`
+- `src/admin/handler.rs` — HTTP handlers for `/admin/reload` (POST), `/admin/status` (GET), `/admin/rotate-key` (POST)
 - `admin_key` config field (or env var)
 - Admin route registration on the health check listener
 
@@ -770,7 +793,7 @@ echo "reload" | socat - UNIX-CONNECT:/run/reverse-proxy/admin.sock
 echo "status" | socat - UNIX-CONNECT:/run/reverse-proxy/admin.sock
 
 # After (HTTP with Bearer token)
-curl -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/reload
+curl -X POST -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/reload
 curl -H "Authorization: Bearer $ADMIN_KEY" http://127.0.0.1:9900/admin/status
 ```
 

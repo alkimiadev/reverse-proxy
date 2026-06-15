@@ -1,6 +1,6 @@
 ---
 status: draft
-last_updated: 2026-06-12
+last_updated: 2026-06-14
 ---
 
 # Reverse Proxy — Architecture
@@ -48,7 +48,7 @@ connections remain HTTP/1.1.
 | [011](decisions/011-multi-domain-tls.md) | Multi-Domain TLS Configuration | Accepted |
 | [012](decisions/012-cipher-suite-restriction.md) | Restrict Cipher Suites to nginx Scope | Accepted |
 | [013](decisions/013-health-check-port.md) | Health Check on Separate Local Port | Accepted |
-| [014](decisions/014-unix-socket-reload.md) | Unix Domain Socket Config Reload API | Accepted |
+| [014](decisions/014-unix-socket-reload.md) | ~~Unix Domain Socket Config Reload API~~ | Superseded by ADR-028 |
 | [015](decisions/015-per-site-timeouts.md) | Per-Site Upstream Timeouts with Defaults | Accepted |
 | [016](decisions/016-explicit-bind-address.md) | Explicit Bind Address Requirement | Accepted |
 | [017](decisions/017-upstream-connection-defaults.md) | Upstream Connection Defaults | Accepted |
@@ -56,12 +56,15 @@ connections remain HTTP/1.1.
 | [019](decisions/019-multi-config-listeners.md) | Multi-Config Listener Support | Accepted |
 | [020](decisions/020-container-deployment.md) | Container Deployment Model | Accepted |
 | [021](decisions/021-x-forwarded-for-edge-proxy.md) | X-Forwarded-For Edge Proxy Model | Accepted |
-| [022](decisions/022-health-check-scope.md) | Health Check Scope — Local Port and Admin Socket Only | Accepted |
+| [022](decisions/022-health-check-scope.md) | Health Check Scope — Local Port and Admin HTTP Only | Accepted |
 | [023](decisions/023-http2-client-facing.md) | HTTP/2 Client-Facing Support | Accepted |
 | [024](decisions/024-ansi-disabled-logging.md) | ANSI-Disabled Logging for Container Deployments | Accepted |
 | [025](decisions/025-rate-limiter-ip-source.md) | Rate Limiter IP Source — ConnectInfo Only | Accepted |
 | [026](decisions/026-connector-timeout-ceiling.md) | Connector Timeout Ceiling for Per-Site Timeouts | Accepted |
-| [027](decisions/027-admin-socket-resource-limits.md) | Admin Socket Resource Limits | Accepted |
+| [027](decisions/027-admin-socket-resource-limits.md) | ~~Admin Socket Resource Limits~~ | Deprecated (ADR-028) |
+| [028](decisions/028-admin-http-api.md) | Authenticated HTTP Admin API | Accepted |
+| [029](decisions/029-config-reload-toctou.md) | Config File TOCTOU Mitigation on Reload | Accepted |
+| [030](decisions/030-wildcard-flag-consistency.md) | Store cli_allow_wildcard_bind in ConfigReloadHandle | Accepted |
 
 ## Open Questions
 
@@ -72,7 +75,7 @@ See [open-questions.md](open-questions.md) for the full tracker.
 | ~~OQ-01~~ | ~~Should cipher suites be restricted beyond rustls defaults?~~ | ~~medium~~ | **resolved** (ADR-012) |
 | ~~OQ-02~~ | ~~What log format should fail2ban consume?~~ | ~~high~~ | **resolved** (ADR-007) |
 | ~~OQ-03~~ | ~~Should the health check endpoint be on a separate port?~~ | ~~low~~ | **resolved** (ADR-013) |
-| ~~OQ-04~~ | ~~Config reload: SIGHUP only or also Unix socket API?~~ | ~~low~~ | **resolved** (ADR-014) |
+| ~~OQ-04~~ | ~~Config reload: SIGHUP only or also Unix socket API?~~ | ~~low~~ | **resolved** (ADR-014, superseded by ADR-028: authenticated HTTP admin API) |
 | ~~OQ-05~~ | ~~Should the proxy bind to multiple addresses?~~ | ~~low~~ | **resolved** (single bind_addr sufficient) |
 | ~~OQ-06~~ | ~~Should upstream timeouts be configurable per-site?~~ | ~~low~~ | **resolved** (ADR-015) |
 | ~~OQ-07~~ | ~~Should per-site TLS overrides be supported for mixed ACME/manual domains?~~ | ~~low~~ | **resolved** (ADR-019) |
@@ -83,6 +86,8 @@ See [open-questions.md](open-questions.md) for the full tracker.
 | ~~OQ-12~~ | ~~Should request access logging be mandatory or optional?~~ | ~~high~~ | **resolved** (mandatory, always-on per operations.md) |
 | OQ-13 | Should `acme_contact` support multiple email addresses? | low | open |
 | OQ-14 | Should rate limiter eviction interval and max age be configurable? | low | open |
+| OQ-15 | Should admin key rotation persist across restarts? | medium | open |
+| ~~OQ-16~~ | ~~Should /admin/reload use POST instead of GET?~~ | ~~low~~ | **resolved** (ADR-028: POST for state-changing, GET for read-only) |
 
 ## Document Lifecycle
 

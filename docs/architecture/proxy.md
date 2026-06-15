@@ -112,9 +112,9 @@ known host are forwarded to the upstream without modification.
 
 The proxy does **not** serve a `/health` route on the main listener. Health
 checking is an operational concern handled by the dedicated local health check
-port (default: 9900, bound to `127.0.0.1` only) and the admin socket's `status`
-command — not by intercepting traffic on the public-facing proxy. See ADR-013
-and ADR-022.
+port (default: 9900, bound to `127.0.0.1` only) and the admin HTTP endpoint's
+`/admin/status` (with Bearer token) — not by intercepting traffic on the
+public-facing proxy. See ADR-013, ADR-022, and ADR-028.
 
 ### 2. Rate Limiter IP Source
 
@@ -340,7 +340,7 @@ questions affecting this document:
   ADR-015: per-site timeout overrides with defaults)
 - ~~**OQ-08**: Should the `/health` path use a less common endpoint to avoid
   upstream collision?~~ (resolved — ADR-022: no `/health` route on the main
-  listener; health checking is via port 9900 and admin socket only)
+  listener; health checking is via port 9900 and admin HTTP endpoint only)
 - ~~**OQ-09**: How should `upstream_connect_timeout_secs` be enforced?~~
   (resolved — ADR-026: 30s connector ceiling, per-site timeout via
   `tokio::time::timeout`)

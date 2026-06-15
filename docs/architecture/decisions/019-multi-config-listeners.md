@@ -99,7 +99,7 @@ Example configuration:
 ```toml
 # Global settings
 health_check_port = 9900
-admin_socket_path = "/run/reverse-proxy/admin.sock"
+admin_key_path = "/etc/reverse-proxy/admin-key"
 
 [logging]
 level = "info"

@@ -48,8 +48,8 @@ listener (see ADR-022).
 - Configurable port allows different deployment scenarios (some monitoring runs
   on different ports)
 - Disabling via `health_check_port = 0` removes the health check entirely —
-  the admin socket's `status` command remains available as an alternative
-  health/status mechanism
+   the admin HTTP endpoint's `/admin/status` (with Bearer token) remains available
+   as an alternative health/status mechanism (ADR-028)
 - When this project is folded into alknet, the health check will use alknet's
   existing patterns, making the separate port unnecessary in that context
 
@@ -69,4 +69,5 @@ listener (see ADR-022).
 
 - [operations.md](../operations.md)
 - [ADR-022](022-health-check-scope.md) — Health check scope (no `/health` on main listener)
+- [ADR-028](028-admin-http-api.md) — Authenticated HTTP admin API (admin endpoints on health check port)
 - OQ-03 (now resolved)

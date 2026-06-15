@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Deprecated — the Unix domain socket admin API has been replaced by an
+authenticated HTTP admin endpoint (ADR-028). Socket resource limits are no
+longer needed.
 
 ## Context
 
