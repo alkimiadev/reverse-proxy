@@ -236,22 +236,42 @@ unit file with security hardening options.
 
 ### fail2ban
 
-Install the filter and jail config:
+Three filters and jails are provided, covering rate-limited requests, repeated
+40x errors, and known-bad scanner paths:
 
 ```bash
-cp deploy/fail2ban/filter.d/reverse-proxy.conf /etc/fail2ban/filter.d/
-cp deploy/fail2ban/jail.d/reverse-proxy.conf /etc/fail2ban/jail.d/
+cp deploy/fail2ban/filter.d/reverse-proxy.conf        /etc/fail2ban/filter.d/
+cp deploy/fail2ban/filter.d/reverse-proxy-4xx.conf    /etc/fail2ban/filter.d/
+cp deploy/fail2ban/filter.d/reverse-proxy-badbots.conf /etc/fail2ban/filter.d/
+cp deploy/fail2ban/jail.d/reverse-proxy.conf          /etc/fail2ban/jail.d/
 systemctl restart fail2ban
 ```
 
-The filter matches `RATE_LIMIT` log lines from the proxy's structured log
-output. The jail bans IPs after 10 rate-limited requests within 60 seconds
-(adjust `maxretry` and `findtime` to taste).
+| Jail | Filter matches | Max Retry | Find Time | Ban Time |
+|------|----------------|-----------|-----------|----------|
+| `reverse-proxy` | `RATE_LIMIT ... status=429` | 10 | 60s | 1h |
+| `reverse-proxy-4xx` | `REQUEST ... status=(401\|403)` | 5 | 10m | 1h |
+| `reverse-proxy-badbots` | known-bad paths (`.env`, `.git`, `/actuator`, `/wp-login.php`, PROPFIND, binary garbage, etc.) | 5 | 10m | 1h |
+
+**Backend note**: The jails set `backend = auto` (file tailing via pyinotify).
+If the default `backend = systemd` is inherited from `defaults-debian.conf`, it
+will ignore `logpath` and read journald instead — silently matching nothing for
+a file-logging proxy. Always set `backend = auto` explicitly on file-backed
+jails.
+
+**ignoreip**: The jails ignore `127.0.0.1/8`, `::1`, and `10.0.0.0/8` to
+prevent the proxy from banning itself or trusted VPN clients.
 
 Rate-limited requests produce log lines like:
 
 ```
 RATE_LIMIT client_ip=203.0.113.50 host=git.example.com path=/login status=429
+```
+
+Proxied requests produce log lines like:
+
+```
+2026-07-28T08:49:20Z  INFO reverse_proxy::proxy::handler: prefix="REQUEST" client_ip=203.0.113.50 host=git.example.com method=GET path=/ status=200 upstream=127.0.0.1:3000 duration_ms=45
 ```
 
 For Docker deployments, mount the log directory so fail2ban on the host can
