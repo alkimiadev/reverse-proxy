@@ -11,6 +11,10 @@ pub struct StaticConfig {
     pub admin_key_path: String,
     #[serde(default = "default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
+    #[serde(default = "default_connection_idle_timeout_secs")]
+    pub connection_idle_timeout_secs: u64,
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -25,6 +29,14 @@ pub fn default_admin_key_path() -> String {
 
 pub fn default_shutdown_timeout_secs() -> u64 {
     30
+}
+
+pub fn default_connection_idle_timeout_secs() -> u64 {
+    60
+}
+
+pub fn default_max_connections() -> usize {
+    1024
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -199,6 +211,10 @@ upstream = "127.0.0.1:8080"
         admin_key_path: String,
         #[serde(default = "default_shutdown_timeout_secs")]
         shutdown_timeout_secs: u64,
+        #[serde(default = "default_connection_idle_timeout_secs")]
+        connection_idle_timeout_secs: u64,
+        #[serde(default = "default_max_connections")]
+        max_connections: usize,
         #[serde(default)]
         logging: LoggingConfig,
         rate_limit: crate::config::dynamic_config::RateLimitConfig,
@@ -215,6 +231,8 @@ upstream = "127.0.0.1:8080"
         assert_eq!(config.health_check_port, 9900);
         assert_eq!(config.admin_key_path, "/etc/reverse-proxy/admin-key");
         assert_eq!(config.shutdown_timeout_secs, 30);
+        assert_eq!(config.connection_idle_timeout_secs, 60);
+        assert_eq!(config.max_connections, 1024);
         assert_eq!(config.logging.level, "info");
         assert_eq!(config.logging.format, "text");
         assert!(config.logging.log_file_path.is_none());
@@ -295,6 +313,10 @@ acme_cache_dir = "/tmp/cache"
             admin_key_path: String,
             #[serde(default = "default_shutdown_timeout_secs")]
             shutdown_timeout_secs: u64,
+            #[serde(default = "default_connection_idle_timeout_secs")]
+            connection_idle_timeout_secs: u64,
+            #[serde(default = "default_max_connections")]
+            max_connections: usize,
             #[serde(default)]
             logging: LoggingConfig,
             rate_limit: crate::config::dynamic_config::RateLimitConfig,
@@ -307,6 +329,8 @@ acme_cache_dir = "/tmp/cache"
         assert_eq!(config.health_check_port, 9900);
         assert_eq!(config.admin_key_path, "/etc/reverse-proxy/admin-key");
         assert_eq!(config.shutdown_timeout_secs, 30);
+        assert_eq!(config.connection_idle_timeout_secs, 60);
+        assert_eq!(config.max_connections, 1024);
         assert_eq!(config.logging.level, "info");
         assert_eq!(config.logging.format, "text");
         assert!(config.logging.log_file_path.is_none());

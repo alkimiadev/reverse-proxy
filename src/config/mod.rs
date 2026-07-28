@@ -49,6 +49,10 @@ pub struct FullConfig {
     pub admin_key_path: String,
     #[serde(default = "static_config::default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
+    #[serde(default = "static_config::default_connection_idle_timeout_secs")]
+    pub connection_idle_timeout_secs: u64,
+    #[serde(default = "static_config::default_max_connections")]
+    pub max_connections: usize,
     #[serde(default)]
     pub logging: LoggingConfig,
     pub rate_limit: RateLimitConfig,
@@ -67,6 +71,8 @@ impl FullConfig {
             health_check_port: self.health_check_port,
             admin_key_path: self.admin_key_path,
             shutdown_timeout_secs: self.shutdown_timeout_secs,
+            connection_idle_timeout_secs: self.connection_idle_timeout_secs,
+            max_connections: self.max_connections,
             logging: self.logging,
         };
         let dynamic_config = DynamicConfig::from_sites(

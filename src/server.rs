@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::ConnectInfo;
 use axum::http::Request;
@@ -10,9 +11,12 @@ use hyper::body::Incoming;
 use hyper_util::rt::TokioExecutor;
 use hyper_util::service::TowerToHyperService;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
 use tower::Service;
 use tracing::{error, info, warn};
+
+const HTTP2_KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
 
 pub struct InFlightCounter {
     count: AtomicUsize,
@@ -59,8 +63,11 @@ pub async fn serve_https_listener(
     router: Router,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     in_flight: Arc<InFlightCounter>,
+    connection_idle_timeout: Duration,
+    max_connections: usize,
 ) {
     let local_addr = tcp_listener.local_addr();
+    let conn_sem = Arc::new(Semaphore::new(max_connections));
 
     loop {
         tokio::select! {
@@ -76,9 +83,19 @@ pub async fn serve_https_listener(
                 let tls_acceptor = tls_acceptor.clone();
                 let router = router.clone();
                 let in_flight = in_flight.clone();
+                let conn_sem = conn_sem.clone();
+
+                let permit = match conn_sem.acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(e) => {
+                        error!(error = %e, "connection semaphore closed");
+                        continue;
+                    }
+                };
 
                 tokio::spawn(async move {
                     let _guard = InFlightGuard::new(in_flight.clone());
+                    let _permit = permit;
 
                     let tls_stream = match tls_acceptor.accept(tcp_stream).await {
                         Ok(stream) => stream,
@@ -101,19 +118,28 @@ pub async fn serve_https_listener(
 
                     if is_h2 {
                         let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
-                        if let Err(e) = builder
-                            .enable_connect_protocol()
-                            .serve_connection(io, svc)
-                            .await
+                        builder
+                            .timer(hyper_util::rt::TokioTimer::new())
+                            .keep_alive_interval(Some(Duration::from_secs(HTTP2_KEEP_ALIVE_INTERVAL_SECS)))
+                            .keep_alive_timeout(connection_idle_timeout)
+                            .enable_connect_protocol();
+                        if let Err(e) = builder.serve_connection(io, svc).await
                         {
                             error!(error = %e, "HTTPS/2 connection error");
                         }
                     } else {
                         let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
-                        builder.http2().enable_connect_protocol();
-                        if let Err(e) = builder
-                            .serve_connection_with_upgrades(io, svc)
-                            .await
+                        builder
+                            .http1()
+                            .timer(hyper_util::rt::TokioTimer::new())
+                            .header_read_timeout(Some(connection_idle_timeout));
+                        builder
+                            .http2()
+                            .timer(hyper_util::rt::TokioTimer::new())
+                            .keep_alive_interval(Some(Duration::from_secs(HTTP2_KEEP_ALIVE_INTERVAL_SECS)))
+                            .keep_alive_timeout(connection_idle_timeout)
+                            .enable_connect_protocol();
+                        if let Err(e) = builder.serve_connection_with_upgrades(io, svc).await
                         {
                             if let Some(hyper_err) = e.downcast_ref::<hyper::Error>() {
                                 if hyper_err.is_incomplete_message() {

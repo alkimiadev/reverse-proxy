@@ -186,6 +186,12 @@ fn diff_static_config(old: &StaticConfig, new: &StaticConfig) -> Vec<String> {
     if old.shutdown_timeout_secs != new.shutdown_timeout_secs {
         changes.push("shutdown_timeout_secs".to_string());
     }
+    if old.connection_idle_timeout_secs != new.connection_idle_timeout_secs {
+        changes.push("connection_idle_timeout_secs".to_string());
+    }
+    if old.max_connections != new.max_connections {
+        changes.push("max_connections".to_string());
+    }
     if old.logging != new.logging {
         changes.push("logging".to_string());
     }

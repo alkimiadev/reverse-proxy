@@ -115,6 +115,8 @@ Configuration uses TOML and is split into **static** (requires restart) and
 | `health_check_port` | `9900` | Local health check port (`0` to disable) |
 | `admin_key_path` | `/etc/reverse-proxy/admin-key` | Path to admin Bearer token file (empty string to disable) |
 | `shutdown_timeout_secs` | `30` | Graceful shutdown timeout |
+| `connection_idle_timeout_secs` | `60` | Server-side idle timeout for client TLS connections (prevents FD exhaustion from abandoned connections) |
+| `max_connections` | `1024` | Max concurrent client TLS connections (backpressure via semaphore) |
 | `logging.level` | `"info"` | Log level |
 | `logging.format` | `"text"` | Log format (`"text"` or `"json"`) |
 | `logging.log_file_path` | (not set) | Path to log file for fail2ban |

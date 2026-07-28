@@ -228,12 +228,14 @@ fn build_upstream_request(req: Request<Body>, upstream_uri: &Uri) -> anyhow::Res
 }
 
 const CONNECT_TIMEOUT_CEILING_SECS: u64 = 30;
+const POOL_MAX_IDLE_PER_HOST: usize = 10;
 
 pub fn create_http_client() -> Client<HttpConnector, Body> {
     let mut connector = HttpConnector::new();
     connector.set_connect_timeout(Some(Duration::from_secs(CONNECT_TIMEOUT_CEILING_SECS)));
     Client::builder(TokioExecutor::new())
         .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
         .build(connector)
 }
 
@@ -254,6 +256,7 @@ pub fn create_https_client() -> Client<hyper_rustls::HttpsConnector<HttpConnecto
 
     Client::builder(TokioExecutor::new())
         .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
         .build(https_connector)
 }
 

@@ -77,6 +77,10 @@ pub enum ValidationError {
     AdminKeyPathNotAbsolute { path: String },
     #[error("admin_key_path must not contain '..' path traversal: '{path}'")]
     AdminKeyPathTraversal { path: String },
+    #[error("connection_idle_timeout_secs must be > 0, got {value}")]
+    ConnectionIdleTimeoutZero { value: u64 },
+    #[error("max_connections must be > 0, got {value}")]
+    MaxConnectionsZero { value: usize },
 }
 
 pub fn validate(
@@ -282,6 +286,18 @@ pub fn validate(
         }
     }
 
+    if static_config.connection_idle_timeout_secs == 0 {
+        errors.push(ValidationError::ConnectionIdleTimeoutZero {
+            value: static_config.connection_idle_timeout_secs,
+        });
+    }
+
+    if static_config.max_connections == 0 {
+        errors.push(ValidationError::MaxConnectionsZero {
+            value: static_config.max_connections,
+        });
+    }
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -376,6 +392,8 @@ mod tests {
             health_check_port: 9900,
             admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
             shutdown_timeout_secs: 30,
+            connection_idle_timeout_secs: 60,
+            max_connections: 1024,
             logging: LoggingConfig::default(),
         }
     }
@@ -412,6 +430,8 @@ mod tests {
             health_check_port: 9900,
             admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
             shutdown_timeout_secs: 30,
+            connection_idle_timeout_secs: 60,
+            max_connections: 1024,
             logging: LoggingConfig::default(),
         }
     }
@@ -1100,6 +1120,8 @@ mod tests {
             health_check_port: 9900,
             admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
             shutdown_timeout_secs: 30,
+            connection_idle_timeout_secs: 60,
+            max_connections: 1024,
             logging: LoggingConfig::default(),
         };
         let mut dynamic = valid_dynamic_config();
@@ -1303,5 +1325,31 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| matches!(e, ValidationError::AdminKeyPathTraversal { .. })));
+    }
+
+    #[test]
+    fn rule_connection_idle_timeout_zero_rejected() {
+        let mut config = valid_static_config();
+        config.connection_idle_timeout_secs = 0;
+        let dynamic = valid_dynamic_config();
+        let result = validate(&config, &dynamic, false);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::ConnectionIdleTimeoutZero { value: 0 })));
+    }
+
+    #[test]
+    fn rule_max_connections_zero_rejected() {
+        let mut config = valid_static_config();
+        config.max_connections = 0;
+        let dynamic = valid_dynamic_config();
+        let result = validate(&config, &dynamic, false);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::MaxConnectionsZero { value: 0 })));
     }
 }

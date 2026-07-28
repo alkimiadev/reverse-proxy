@@ -90,6 +90,8 @@ Immutable after startup. Changes require a process restart.
 | `health_check_port` | `u16` | Port for local health check endpoint (default: `9900`; set to `0` to disable; bound to `127.0.0.1` only; see ADR-013, ADR-022) |
 | `admin_key_path` | `String` | Path to file containing the admin Bearer token (default: `/etc/reverse-proxy/admin-key`; empty string to disable admin endpoints; see ADR-028) |
 | `shutdown_timeout_secs` | `u64` | Maximum seconds to wait for in-flight requests during graceful shutdown (default: `30`) |
+| `connection_idle_timeout_secs` | `u64` | Server-side idle timeout for client TLS connections. Idle HTTP/2 connections are closed after this duration (with keep-alive pings at 15s intervals to detect dead peers). HTTP/1.1 connections are closed if the client doesn't send a complete request header within this duration. Prevents FD exhaustion from abandoned connections (default: `60`; must be > 0; see review #007 C1) |
+| `max_connections` | `usize` | Maximum number of concurrent client TLS connections. When the limit is reached, new connections wait in the OS TCP backlog until a slot frees (default: `1024`; must be > 0; see review #007 C2) |
 | `logging` | `LoggingConfig` | Logging configuration (see below) |
 
 **LoggingConfig** (nested in `[logging]` TOML section):
@@ -105,9 +107,11 @@ This is critical for fail2ban regex matching and Docker log output (see ADR-024)
 Both text and JSON formats produce plain-text output without color codes.
 
 **Note**: The entire `LoggingConfig` (including `log_file_path`) is static and
-requires a process restart to change. Log file path changes require reopening
-file handles, which is complex and low-value for Phase 1. Log rotation (Phase 2)
-will be handled via signal-based or built-in rotation.
+requires a process restart to change. However, the log file can be reopened
+without restarting by sending `SIGUSR1` to the process — this closes the
+current file handle and opens a new one at the same path. This enables
+standard `postrotate` logrotate configs (rename + signal) without the
+`copytruncate` workaround that creates sparse files. See review #007 W1.
 
 **ListenerConfig** (per-listener static config):
 
@@ -180,6 +184,8 @@ Phase 2.
 | `health_check_port` | `u16` | `9900` | No |
 | `admin_key_path` | `String` | `/etc/reverse-proxy/admin-key` | No |
 | `shutdown_timeout_secs` | `u64` | `30` | No |
+| `connection_idle_timeout_secs` | `u64` | `60` | No |
+| `max_connections` | `usize` | `1024` | No |
 | `logging.level` | `String` | `"info"` | No |
 | `logging.format` | `String` | `"text"` | No |
 | `logging.log_file_path` | `String` | (not set) | No |
@@ -306,6 +312,8 @@ certificate:
 # Global settings
 health_check_port = 9900     # Local health check (0 to disable)
 admin_key_path = "/etc/reverse-proxy/admin-key"  # Empty string to disable
+# connection_idle_timeout_secs = 60  # Server-side idle timeout (default: 60)
+# max_connections = 1024              # Max concurrent TLS connections (default: 1024)
 
 [logging]
 level = "info"
@@ -446,8 +454,13 @@ On startup, the config is validated:
     email) or `"mailto:user"` (no `@`) are rejected. Let's Encrypt requires
     a contact email for production certificate requests.
 20. `admin_key_path` must be either an empty string (disabled) or an absolute
-    path. Relative paths and paths containing `..` are rejected. This prevents
-    path traversal attacks on the admin key file.
+     path. Relative paths and paths containing `..` are rejected. This prevents
+     path traversal attacks on the admin key file.
+21. `connection_idle_timeout_secs` must be > 0. A zero value would disable
+     the server-side idle timeout, reintroducing the FD exhaustion bug from
+     review #007 C1.
+22. `max_connections` must be > 0. A zero value would deadlock the connection
+     semaphore, preventing any client connection from being accepted.
 
 On SIGHUP reload, the same validation applies. If the new config fails
 validation, the reload is rejected and the old config remains active. An error

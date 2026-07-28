@@ -10,6 +10,8 @@ The proxy needs to handle Unix signals for:
 - **Graceful shutdown**: SIGTERM and SIGINT should stop accepting new
   connections, drain in-flight requests, then exit.
 - **Config reload**: SIGHUP should trigger a DynamicConfig reload from disk.
+- **Log reopen**: SIGUSR1 should close and reopen the log file, enabling
+  `postrotate` logrotate configs without `copytruncate` (see review #007 W1).
 
 Two approaches for signal handling:
 - **`tokio::signal`**: Built into tokio. Handles SIGTERM and SIGINT via
@@ -22,6 +24,7 @@ Two approaches for signal handling:
 Use `signal-hook` for all signal handling. Specifically:
 - `signal-hook::flag` to set termination flags on SIGTERM/SIGINT
 - `signal-hook` to register a SIGHUP handler that triggers config reload
+- `signal-hook` to register a SIGUSR1 handler that reopens the log file
 
 `tokio::signal::ctrl_c()` is registered as a secondary shutdown trigger; both
 mechanisms converge on the same shutdown path. This is a belt-and-suspenders
@@ -34,6 +37,10 @@ The shutdown sequence:
    for in-flight requests to complete, then exit with code 0.
 2. On SIGHUP: re-read config file, validate, and swap DynamicConfig if valid.
    Log the result.
+3. On SIGUSR1: close the current log file handle and open a new one at the
+   same path. Enables standard `postrotate` logrotate configs (rename + signal)
+   without `copytruncate`, which creates sparse files when the FD offset is
+   high. See review #007 W1.
 
 ## Rationale
 

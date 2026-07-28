@@ -22,6 +22,8 @@ pub fn test_static_config() -> StaticConfig {
         health_check_port: 9900,
         admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
         shutdown_timeout_secs: 30,
+        connection_idle_timeout_secs: 60,
+        max_connections: 1024,
         logging: LoggingConfig::default(),
     }
 }

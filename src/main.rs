@@ -60,7 +60,8 @@ fn main() {
 }
 
 async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Result<()> {
-    logging::init(&loaded_config.static_config.logging).context("failed to initialize logging")?;
+    let log_init = logging::init(&loaded_config.static_config.logging)
+        .context("failed to initialize logging")?;
 
     info!("reverse-proxy starting");
 
@@ -92,6 +93,7 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
         shutdown.clone(),
         reload_handle.clone(),
         config_path.to_string(),
+        log_init.reopen_handle,
     )?;
 
     let admin_auth = if !loaded_config.static_config.admin_key_path.is_empty() {
@@ -229,6 +231,10 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
             app.clone(),
             shutdown_rx,
             in_flight.clone(),
+            std::time::Duration::from_secs(
+                loaded_config.static_config.connection_idle_timeout_secs,
+            ),
+            loaded_config.static_config.max_connections,
         ));
 
         info!(

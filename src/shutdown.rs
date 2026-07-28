@@ -2,9 +2,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 use signal_hook::iterator::Signals;
 use tokio::sync::watch;
+
+use crate::logging::reopen::LogReopenHandle;
 
 pub struct GracefulShutdown {
     shutdown_timeout: Duration,
@@ -47,8 +49,9 @@ pub fn register_signal_handlers(
     shutdown: Arc<GracefulShutdown>,
     reload_handle: Arc<crate::config::ConfigReloadHandle>,
     config_path: String,
+    log_reopen_handle: Option<LogReopenHandle>,
 ) -> anyhow::Result<()> {
-    let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP])?;
+    let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP, SIGUSR1])?;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<i32>(16);
 
     std::thread::spawn(move || {
@@ -58,6 +61,8 @@ pub fn register_signal_handlers(
             }
         }
     });
+
+    let reopen_handle = log_reopen_handle.map(Arc::new);
 
     tokio::spawn(async move {
         while let Some(sig) = rx.recv().await {
@@ -70,6 +75,10 @@ pub fn register_signal_handlers(
                 SIGHUP => {
                     tracing::info!(event = "SIGNAL", signal = "SIGHUP");
                     handle_sighup_reload(&reload_handle, &config_path).await;
+                }
+                SIGUSR1 => {
+                    tracing::info!(event = "SIGNAL", signal = "SIGUSR1");
+                    handle_sigusr1_log_reopen(reopen_handle.as_ref()).await;
                 }
                 _ => {
                     tracing::debug!(event = "SIGNAL", signal = %sig);
@@ -113,6 +122,22 @@ pub async fn handle_sighup_reload(
         }
         Err(e) => {
             tracing::error!(event = "CONFIG_RELOAD", status = "error", error = %e);
+        }
+    }
+}
+
+pub async fn handle_sigusr1_log_reopen(reopen_handle: Option<&Arc<LogReopenHandle>>) {
+    match reopen_handle {
+        Some(handle) => match handle.reopen() {
+            Ok(()) => {
+                tracing::info!(event = "LOG_REOPEN", status = "success");
+            }
+            Err(e) => {
+                tracing::error!(event = "LOG_REOPEN", status = "error", error = %e);
+            }
+        },
+        None => {
+            tracing::warn!(event = "LOG_REOPEN", status = "skipped", reason = "no_log_file");
         }
     }
 }
