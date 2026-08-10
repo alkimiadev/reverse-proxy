@@ -964,3 +964,258 @@ async fn test_graceful_shutdown_with_health_check() {
 
     handle.abort();
 }
+
+mod idle_timeout_tests {
+    use super::*;
+    use reverse_proxy::server::InFlightCounter;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio_rustls::TlsAcceptor;
+
+    fn make_test_tls_acceptor() -> TlsAcceptor {
+        let mut params = rcgen::CertificateParams::new(vec!["test.local".to_string()]).unwrap();
+        params.distinguished_name = rcgen::DistinguishedName::new();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "test.local");
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+        let cert_der = cert.der().clone();
+        let key_der = key_pair.serialize_der();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
+
+        let server_config = reverse_proxy::tls::config::build_manual_server_config_from_certs(
+            vec![cert_der],
+            private_key,
+        )
+        .unwrap();
+        TlsAcceptor::from(Arc::new(server_config))
+    }
+
+    fn make_proxy_router() -> (
+        Arc<reverse_proxy::proxy::ProxyState>,
+        Arc<ArcSwap<DynamicConfig>>,
+        Arc<reverse_proxy::rate_limit::RateLimiter>,
+    ) {
+        let sites = vec![SiteConfig {
+            host: "test.local".to_string(),
+            upstream: "127.0.0.1:18080".to_string(),
+            upstream_scheme: "http".to_string(),
+            upstream_connect_timeout_secs: 5,
+            upstream_request_timeout_secs: 60,
+        }];
+        let config = DynamicConfig::from_sites(
+            sites,
+            RateLimitConfig {
+                requests_per_second: 100,
+                burst: 100,
+            },
+            BodyConfig {
+                limit_bytes: 104857600,
+            },
+        );
+        let config_arc = Arc::new(ArcSwap::from_pointee(config));
+        let proxy_state = Arc::new(reverse_proxy::proxy::ProxyState {
+            config: config_arc.clone(),
+            http_client: reverse_proxy::proxy::create_http_client(),
+            https_client: reverse_proxy::proxy::create_https_client(),
+        });
+        let rate_limiter =
+            Arc::new(reverse_proxy::rate_limit::RateLimiter::new(config_arc.clone()));
+        (proxy_state, config_arc, rate_limiter)
+    }
+
+    async fn start_test_https_server(
+        idle_timeout: Duration,
+    ) -> (
+        std::net::SocketAddr,
+        Arc<InFlightCounter>,
+        tokio::task::JoinHandle<()>,
+        tokio::sync::watch::Sender<bool>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let tls_acceptor = make_test_tls_acceptor();
+        let (proxy_state, config_arc, rate_limiter) = make_proxy_router();
+        let router = reverse_proxy::proxy::build_router(proxy_state, config_arc, rate_limiter);
+        let in_flight = InFlightCounter::new();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let in_flight_clone = in_flight.clone();
+        let handle = tokio::spawn(async move {
+            reverse_proxy::server::serve_https_listener(
+                listener,
+                tls_acceptor,
+                router,
+                shutdown_rx,
+                in_flight_clone,
+                idle_timeout,
+                1024,
+            )
+            .await;
+        });
+
+        (addr, in_flight, handle, shutdown_tx)
+    }
+
+    fn make_client_tls_config() -> Arc<rustls::ClientConfig> {
+        let mut roots = rustls::RootCertStore::empty();
+        let _ = roots.add(CertificateDer::from_slice(b"test".to_vec().as_slice()));
+        let config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerifyVerifier))
+            .with_no_client_auth();
+        Arc::new(config)
+    }
+
+    #[derive(Debug)]
+    struct NoVerifyVerifier;
+
+    impl rustls::client::danger::ServerCertVerifier for NoVerifyVerifier {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &rustls::pki_types::ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            vec![
+                rustls::SignatureScheme::RSA_PKCS1_SHA256,
+                rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+                rustls::SignatureScheme::RSA_PSS_SHA256,
+                rustls::SignatureScheme::RSA_PKCS1_SHA384,
+                rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+                rustls::SignatureScheme::RSA_PSS_SHA384,
+                rustls::SignatureScheme::RSA_PKCS1_SHA512,
+                rustls::SignatureScheme::RSA_PSS_SHA512,
+                rustls::SignatureScheme::ED25519,
+            ]
+        }
+    }
+
+    async fn connect_tls(addr: std::net::SocketAddr) -> tokio_rustls::client::TlsStream<tokio::net::TcpStream> {
+        let tcp_stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let server_name = rustls::pki_types::ServerName::try_from("test.local").unwrap();
+        let connector = tokio_rustls::TlsConnector::from(make_client_tls_config());
+        connector.connect(server_name, tcp_stream).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn idle_http1_connection_closed_after_timeout() {
+        let idle_timeout = Duration::from_millis(500);
+        let (addr, in_flight, _handle, _shutdown_tx) = start_test_https_server(idle_timeout).await;
+
+        let mut tls_stream = connect_tls(addr).await;
+
+        tls_stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: test.local\r\nConnection: keep-alive\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut buf = vec![0u8; 4096];
+        let n = tokio::time::timeout(Duration::from_secs(2), tls_stream.read(&mut buf))
+            .await
+            .expect("timeout waiting for first response")
+            .expect("read error");
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            response.starts_with("HTTP/1.1 "),
+            "expected HTTP response, got: {response}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            in_flight.count(),
+            1,
+            "connection should still be in-flight right after response"
+        );
+
+        let read_result = tokio::time::timeout(
+            idle_timeout + Duration::from_secs(2),
+            tls_stream.read(&mut buf),
+        )
+        .await
+        .expect("timeout waiting for idle close");
+
+        let closed = match read_result {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => true,
+            Err(e) => panic!("unexpected read error: {e:?}"),
+        };
+        assert!(
+            closed,
+            "connection should be closed by server after idle timeout"
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            in_flight.count(),
+            0,
+            "in-flight count should be 0 after connection closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn active_http1_connection_not_closed_within_timeout() {
+        let idle_timeout = Duration::from_secs(2);
+        let (addr, in_flight, _handle, _shutdown_tx) = start_test_https_server(idle_timeout).await;
+
+        let mut tls_stream = connect_tls(addr).await;
+
+        tls_stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: test.local\r\nConnection: keep-alive\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut buf = vec![0u8; 4096];
+        let n = tokio::time::timeout(Duration::from_secs(2), tls_stream.read(&mut buf))
+            .await
+            .expect("timeout waiting for first response")
+            .expect("read error");
+        assert!(n > 0);
+
+        let read_result = tokio::time::timeout(
+            idle_timeout / 2,
+            tls_stream.read(&mut buf),
+        )
+        .await;
+
+        assert!(
+            read_result.is_err(),
+            "connection should NOT be closed within idle timeout"
+        );
+
+        assert_eq!(
+            in_flight.count(),
+            1,
+            "connection should still be in-flight (active)"
+        );
+    }
+}

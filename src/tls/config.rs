@@ -56,6 +56,20 @@ pub fn build_manual_server_config(cert_path: &str, key_path: &str) -> Result<Ser
     let certs = load_certs(cert_path)?;
     let key = load_private_key(key_path)?;
 
+    build_server_config(certs, key)
+}
+
+pub fn build_manual_server_config_from_certs(
+    certs: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+) -> Result<ServerConfig> {
+    build_server_config(certs, key)
+}
+
+fn build_server_config(
+    certs: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+) -> Result<ServerConfig> {
     let provider = crypto_provider();
     let config = ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&TLS12, &TLS13])
@@ -65,8 +79,6 @@ pub fn build_manual_server_config(cert_path: &str, key_path: &str) -> Result<Ser
         .with_context(|| "failed to configure certificate/key pair")?;
 
     let mut config = config;
-    // Advertise HTTP/2 and HTTP/1.1 via ALPN so clients can negotiate HTTP/2.
-    // Note: acme-tls/1 is NOT included here — it's only needed for ACME mode.
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(config)
