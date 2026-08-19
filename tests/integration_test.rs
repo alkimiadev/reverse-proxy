@@ -995,14 +995,16 @@ mod idle_timeout_tests {
         TlsAcceptor::from(Arc::new(server_config))
     }
 
-    fn make_proxy_router() -> (
+    fn make_proxy_router_with_upstream(
+        upstream: String,
+    ) -> (
         Arc<reverse_proxy::proxy::ProxyState>,
         Arc<ArcSwap<DynamicConfig>>,
         Arc<reverse_proxy::rate_limit::RateLimiter>,
     ) {
         let sites = vec![SiteConfig {
             host: "test.local".to_string(),
-            upstream: "127.0.0.1:18080".to_string(),
+            upstream,
             upstream_scheme: "http".to_string(),
             upstream_connect_timeout_secs: 5,
             upstream_request_timeout_secs: 60,
@@ -1028,8 +1030,9 @@ mod idle_timeout_tests {
         (proxy_state, config_arc, rate_limiter)
     }
 
-    async fn start_test_https_server(
+    async fn start_test_https_server_with_upstream(
         idle_timeout: Duration,
+        upstream: String,
     ) -> (
         std::net::SocketAddr,
         Arc<InFlightCounter>,
@@ -1039,7 +1042,7 @@ mod idle_timeout_tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let tls_acceptor = make_test_tls_acceptor();
-        let (proxy_state, config_arc, rate_limiter) = make_proxy_router();
+        let (proxy_state, config_arc, rate_limiter) = make_proxy_router_with_upstream(upstream);
         let router = reverse_proxy::proxy::build_router(proxy_state, config_arc, rate_limiter);
         let in_flight = InFlightCounter::new();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1129,7 +1132,10 @@ mod idle_timeout_tests {
     #[tokio::test]
     async fn idle_http1_connection_closed_after_timeout() {
         let idle_timeout = Duration::from_millis(500);
-        let (addr, in_flight, _handle, _shutdown_tx) = start_test_https_server(idle_timeout).await;
+        let upstream = helpers::http_test_helper::TestUpstream::spawn_ok().await;
+        let upstream_addr = format!("127.0.0.1:{}", upstream.addr.port());
+        let (addr, in_flight, _handle, _shutdown_tx) =
+            start_test_https_server_with_upstream(idle_timeout, upstream_addr).await;
 
         let mut tls_stream = connect_tls(addr).await;
 
@@ -1145,8 +1151,8 @@ mod idle_timeout_tests {
             .expect("read error");
         let response = String::from_utf8_lossy(&buf[..n]);
         assert!(
-            response.starts_with("HTTP/1.1 "),
-            "expected HTTP response, got: {response}"
+            response.starts_with("HTTP/1.1 200 OK"),
+            "expected a real 200 round-trip from the upstream, got: {response}"
         );
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1180,12 +1186,17 @@ mod idle_timeout_tests {
             0,
             "in-flight count should be 0 after connection closed"
         );
+
+        let _ = upstream.shutdown_tx.send(());
     }
 
     #[tokio::test]
     async fn active_http1_connection_not_closed_within_timeout() {
         let idle_timeout = Duration::from_secs(2);
-        let (addr, in_flight, _handle, _shutdown_tx) = start_test_https_server(idle_timeout).await;
+        let upstream = helpers::http_test_helper::TestUpstream::spawn_ok().await;
+        let upstream_addr = format!("127.0.0.1:{}", upstream.addr.port());
+        let (addr, in_flight, _handle, _shutdown_tx) =
+            start_test_https_server_with_upstream(idle_timeout, upstream_addr).await;
 
         let mut tls_stream = connect_tls(addr).await;
 
@@ -1199,7 +1210,11 @@ mod idle_timeout_tests {
             .await
             .expect("timeout waiting for first response")
             .expect("read error");
-        assert!(n > 0);
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "expected a real 200 round-trip from the upstream, got: {response}"
+        );
 
         let read_result = tokio::time::timeout(
             idle_timeout / 2,
@@ -1217,5 +1232,83 @@ mod idle_timeout_tests {
             1,
             "connection should still be in-flight (active)"
         );
+
+        let _ = upstream.shutdown_tx.send(());
+    }
+
+    // Reproducer for review #009 C2: a streaming response body that outlasts
+    // the idle timeout must NOT be killed mid-stream by the watchdog. The
+    // watchdog should only fire when no request is in flight AND no response
+    // body is still streaming. With the current code (commit 4ab8c51),
+    // `in_flight` is decremented when the handler returns the Response, not
+    // when the body finishes streaming, so this test is expected to FAIL.
+    #[tokio::test]
+    async fn streaming_body_not_killed_by_idle_watchdog() {
+        // Stream one chunk every 200ms for 3s total (15 chunks). The stream
+        // outlasts the 500ms idle timeout by 6x.
+        let chunk_interval = Duration::from_millis(200);
+        let num_chunks: usize = 15;
+        let idle_timeout = Duration::from_millis(500);
+
+        let upstream =
+            helpers::http_test_helper::TestUpstream::spawn_slow_stream(chunk_interval, num_chunks)
+                .await;
+        let upstream_addr = format!("127.0.0.1:{}", upstream.addr.port());
+
+        let (addr, _in_flight, _handle, _shutdown_tx) =
+            start_test_https_server_with_upstream(idle_timeout, upstream_addr).await;
+
+        let mut tls_stream = connect_tls(addr).await;
+
+        tls_stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: test.local\r\nConnection: keep-alive\r\n\r\n")
+            .await
+            .unwrap();
+
+        // Read the response headers + as much body as the server sends before
+        // closing the connection (or before a generous test deadline).
+        let mut buf = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        let mut tmp = [0u8; 4096];
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, tls_stream.read(&mut tmp)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => buf.extend_from_slice(&tmp[..n]),
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Ok(Err(e)) => panic!("unexpected read error: {e:?}"),
+                Err(_) => break,
+            }
+        }
+
+        let response = String::from_utf8_lossy(&buf);
+
+        // The response must contain every chunk the upstream emitted, in
+        // order. If the watchdog killed the connection mid-stream, later
+        // chunks will be missing. We check for each chunk as a separate
+        // substring (in order) rather than a single contiguous string
+        // because HTTP chunked transfer-encoding interleaves frame
+        // delimiters ("\r\n3\r\n") between data chunks.
+        let mut search_from = 0;
+        for i in 0..num_chunks {
+            let needle = format!("<{i}>");
+            match response[search_from..].find(&needle) {
+                Some(pos) => search_from += pos + needle.len(),
+                None => {
+                    panic!(
+                        "streaming body was truncated — watchdog killed the connection mid-stream.\n\
+                         missing chunk {i:?} ({needle:?}) after byte {search_from}.\n\
+                         expected {num_chunks} chunks (<0>..<{n}>, n={n}).\n\
+                         got: {response:?}",
+                        n = num_chunks - 1,
+                    );
+                }
+            }
+        }
+
+        let _ = upstream.shutdown_tx.send(());
     }
 }

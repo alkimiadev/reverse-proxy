@@ -9,9 +9,23 @@ reviewed_code:
 reviewer: code-reviewer
 based_on: docs/reviews/008-http2-keepalive-defeats-idle-timeout.md
 trigger: Post-deployment observation — 9 days after review #008 fix was committed, production still shows the same idle-FD leak (433/1024 FDs, growing)
+fixes:
+  - C2: FIXED in repo (commit pending) — IdleTrackingBody wrapper owns the
+    in_flight decrement until body EOF/drop; streaming reproducer test added
+    and passing.
+  - C3: FIXED in repo (commit pending) — existing idle-timeout tests rewired
+    to spawn a real upstream and assert a 200 round-trip instead of pointing
+    at a dead 127.0.0.1:18080.
+  - C1: NOT FIXED — deploy still pending (out of scope for this repo session).
 ---
 
-# Follow-Up Review #009 — Fix for #008 Was Never Deployed + Streaming-Body Bug in the Fix
+# Follow-Up Review #009 — Fix for #008 Was Never Deployed + Streaming-Body Bug in the Fix (+ dead-upstream test wiring)
+
+> **Session update (2026-08-19):** C2 (streaming-body bug) and C3
+> (dead-upstream test wiring, found during verification) are **fixed in
+> the working tree** and verified by tests. C1 (deploy to dev1) remains
+> open and out of scope for the repo session. See the Summary table for
+> per-finding status.
 
 ## Purpose
 
@@ -120,13 +134,20 @@ sudo strings /usr/local/bin/reverse-proxy | grep -c "closing idle"   # should be
 
 ---
 
-## Finding C2: Watchdog decrements `in_flight` when the handler returns, not when the body finishes streaming [new code required]
+## Finding C2: Watchdog decrements `in_flight` when the handler returns, not when the body finishes streaming [new code required] — VERIFIED + FIXED in repo
 
 **Severity**: Critical for correctness — deploying the fix without
 addressing this will trade the FD leak for intermittent broken large
 transfers. Not a regression of the *current* production behavior (the
 current binary has no watchdog at all), but a bug in the fix that would
 become visible once C1 is deployed.
+
+**Status (2026-08-19)**: Bug **verified empirically** with a reproducer
+test, then **fixed** in `src/server.rs` with the `IdleTrackingBody`
+wrapper (Option A from the recommended fix below). The reproducer test
+`streaming_body_not_killed_by_idle_watchdog` now passes. Full suite green
+(226 unit + 40 integration, clippy clean). C1 (deploy) is still pending
+and out of scope for the repo-side fix session.
 
 ### The bug
 
@@ -204,6 +225,14 @@ The relevant test (`active_http1_connection_not_closed_within_timeout`)
 only keeps the connection "active" by making the idle timeout longer
 than the test window — it does not exercise a long-running stream with
 `in_flight == 0`.
+
+**Correction (2026-08-19, during verification):** The reason is
+actually worse than "buffered response" — see C3 below. The two tests
+pointed at `127.0.0.1:18080`, where **nothing listens**, so they were
+validating watchdog behaviour against an immediate 504 error response
+(a `HTTP/1.1 ` status line and `in_flight == 1` hold just as well for
+a 504 as a 200). They never exercised a real upstream round-trip at
+all, buffered or otherwise.
 
 ### Recommended fix
 
@@ -297,6 +326,77 @@ Add an integration test:
 This test fails against the current `4ab8c51` code and passes with
 Option A.
 
+**Implemented (2026-08-19):** Added as
+`tests/integration_test.rs::idle_timeout_tests::streaming_body_not_killed_by_idle_watchdog`.
+Upstream emits 15 chunks every 200ms (3s total) via a new
+`TestUpstream::spawn_slow_stream` helper; `idle_timeout = 500ms`. The
+test asserts all 15 chunks arrive in order. Against `4ab8c51` it fails
+after ~2 chunks (watchdog fires at ~500ms); with the `IdleTrackingBody`
+fix it passes (all 15 chunks stream through). The fix in `src/server.rs`
+follows Option A but reuses the single `in_flight` counter (the body's
+decrement happens on EOF/drop via `IdleTrackingBody`, the handler's
+decrement happens only on the `Err` branch — so a streaming `Response`
+keeps `in_flight == 1` until the body finishes, which is exactly the
+watchdog's idle condition). A `Drop` impl guards against double-decrement
+(EOF then drop) with an `AtomicBool`.
+
+---
+
+## Finding C3: Existing idle-timeout tests point at a dead upstream (127.0.0.1:18080) [test hygiene] — VERIFIED + FIXED in repo
+
+**Severity**: Medium — not a production bug, but a test-hygiene defect
+that explains *why* C2 was never caught and that would have masked any
+future regression of the watchdog against real traffic.
+
+### The bug
+
+`tests/integration_test.rs` (`make_proxy_router` / `start_test_https_server`
+before this fix) hardcoded the test upstream as `127.0.0.1:18080`, but
+**nothing spawns a listener there**. The two idle-timeout tests
+(`idle_http1_connection_closed_after_timeout`,
+`active_http1_connection_not_closed_within_timeout`) therefore hit an
+immediate upstream **connection refused**, and the proxy returns a 504
+error response. The tests then assert:
+
+- `response.starts_with("HTTP/1.1 ")` — true for `HTTP/1.1 504 ...` just
+  as for `HTTP/1.1 200 OK`
+- `in_flight.count() == 1` right after the response — true regardless of
+  status, since the connection is still open
+- (for the "active" test) `n > 0` — true for the 504 body bytes
+
+Both tests pass, but they have **never exercised a real upstream
+round-trip**. They validate watchdog timing behaviour against an error
+response, not a 200 from a live upstream — so they could not catch C2
+even if they tried to stream.
+
+### Why this matters
+
+C2's "Why the tests don't catch it" section (above) attributed the miss
+to "the test upstream returns immediately with a complete buffered
+response." That is generous: the upstream returned immediately because
+it didn't exist. The structural defect (no live upstream in the idle
+test wiring) is what made the streaming blind spot possible — there was
+never a mechanism in the test harness to point the proxy at a spawned
+upstream, streaming or otherwise.
+
+### Fix (implemented)
+
+- Refactored `make_proxy_router` → `make_proxy_router_with_upstream(upstream)`
+  that takes the upstream address as a parameter.
+- Refactored `start_test_https_server` →
+  `start_test_https_server_with_upstream(idle_timeout, upstream)`.
+- Both idle-timeout tests now spawn a real `TestUpstream::spawn_ok()`
+  upstream and assert `response.starts_with("HTTP/1.1 200 OK")` (a real
+  round-trip) instead of the loose `HTTP/1.1 ` prefix.
+- The streaming reproducer (C2) uses the same wiring with
+  `TestUpstream::spawn_slow_stream`.
+- Removed the dead no-arg wrappers (`make_proxy_router`,
+  `start_test_https_server`) since no caller needs the hardcoded
+  `18080` default anymore.
+
+`cargo test` is green (226 unit + 40 integration); `cargo clippy
+--all-targets` clean.
+
 ---
 
 ## Production data snapshot (2026-08-19 09:11 UTC)
@@ -352,18 +452,29 @@ should be closed only when the fix is verified in production. Leave as
 
 ## Summary
 
-| ID | Issue | Severity | Action |
-|----|-------|----------|--------|
-| C1 | Review #008 fix never deployed — dev1 running pre-fix binary | Critical | Build fresh from HEAD (after C2 fix), deploy, verify |
-| C2 | Watchdog decrements `in_flight` on handler return, not body-stream end → will kill large `git clone` | Critical (latent) | Wrap response body in `IdleTrackingBody` that owns the decrement; add streaming integration test |
-| — | Review #008 `status: open` despite "Closes" commit | Minor | Close after C1+C2 verified in production |
+| ID | Issue | Severity | Action | Status |
+|----|-------|----------|--------|--------|
+| C1 | Review #008 fix never deployed — dev1 running pre-fix binary | Critical | Build fresh from HEAD (after C2 fix), deploy, verify | **Open** (deploy pending — out of scope for repo session) |
+| C2 | Watchdog decrements `in_flight` on handler return, not body-stream end → will kill large `git clone` | Critical (latent) | Wrap response body in `IdleTrackingBody` that owns the decrement; add streaming integration test | **Fixed in repo** (commit pending); verified by reproducer test |
+| C3 | Existing idle-timeout tests point at dead `127.0.0.1:18080` — never exercised a real upstream round-trip, so couldn't catch C2 | Medium (test hygiene) | Rewire tests to spawn a real upstream; assert `200 OK` | **Fixed in repo** (commit pending) |
+| — | Review #008 `status: open` despite "Closes" commit | Minor | Close after C1+C2 verified in production | Open (unchanged) |
+
+> Note: C2 and C3 are fixed in the working tree but **not yet committed**
+> as of this writing — they will land in a single follow-up commit. C1
+> (deploy) must still happen before this review can move to `closed`,
+> since the leak is still live in production until the rebuilt binary is
+> shipped to dev1.
 
 ## Recommended sequence for the fix session
 
-1. **In this repo**: implement C2 (the `IdleTrackingBody` wrapper + guard
+1. ~~**In this repo**: implement C2 (the `IdleTrackingBody` wrapper + guard
    against double-decrement). Add the streaming-body integration test
    described above. Run `cargo test` — expect the new test to pass and
-   existing tests to still pass.
+   existing tests to still pass.~~ **Done (2026-08-19).** C2 + C3 fixed,
+   `streaming_body_not_killed_by_idle_watchdog` reproducer added (red on
+   `4ab8c51`, green with fix), existing idle-timeout tests rewired to a
+   real spawned upstream. `cargo test` 226+40 green, `cargo clippy
+   --all-targets` clean. **Commit pending.**
 2. **Build**: `cargo build --release` → produces a binary with both the
    watchdog (from `4ab8c51`) and the streaming fix (new).
 3. **Deploy to dev1**: copy binary, rebuild image, `docker compose up -d`.

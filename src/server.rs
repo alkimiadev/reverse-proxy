@@ -1,13 +1,17 @@
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
+use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::Request;
 use axum::response::Response;
 use axum::Router;
+use http_body::Frame;
 use hyper::body::Incoming;
 use hyper_util::rt::TokioExecutor;
 use hyper_util::service::TowerToHyperService;
@@ -95,6 +99,84 @@ struct IdleTrackingService<S> {
     idle_state: Arc<IdleState>,
 }
 
+struct IdleTrackingBody<B> {
+    inner: Option<B>,
+    idle_state: Arc<IdleState>,
+    decremented: AtomicBool,
+}
+
+impl<B> IdleTrackingBody<B> {
+    fn new(inner: B, idle_state: Arc<IdleState>) -> Self {
+        Self {
+            inner: Some(inner),
+            idle_state,
+            decremented: AtomicBool::new(false),
+        }
+    }
+
+    fn release(&self) {
+        if !self.decremented.swap(true, Ordering::SeqCst) {
+            self.idle_state.in_flight.fetch_sub(1, Ordering::SeqCst);
+            self.idle_state.touch();
+        }
+    }
+}
+
+impl<B> Drop for IdleTrackingBody<B> {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+impl<B> http_body::Body for IdleTrackingBody<B>
+where
+    B: http_body::Body + Unpin + Send + 'static,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        let inner = match this.inner.as_mut() {
+            Some(b) => b,
+            None => return Poll::Ready(None),
+        };
+
+        match Pin::new(inner).poll_frame(cx) {
+            Poll::Ready(None) => {
+                this.release();
+                Poll::Ready(None)
+            }
+            Poll::Ready(Some(Err(e))) => {
+                this.release();
+                Poll::Ready(Some(Err(e)))
+            }
+            Poll::Ready(Some(Ok(frame))) => {
+                this.idle_state.touch();
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner
+            .as_ref()
+            .map(|b| b.is_end_stream())
+            .unwrap_or(true)
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner
+            .as_ref()
+            .map(|b| b.size_hint())
+            .unwrap_or_default()
+    }
+}
+
 impl<S> Service<Request<Incoming>> for IdleTrackingService<S>
 where
     S: Service<Request<Incoming>, Response = Response> + Clone + Send + 'static,
@@ -120,9 +202,19 @@ where
 
         Box::pin(async move {
             let result = inner_fut.await;
-            idle_state.in_flight.fetch_sub(1, Ordering::SeqCst);
-            idle_state.touch();
-            result
+            match result {
+                Ok(resp) => {
+                    let (parts, body) = resp.into_parts();
+                    let tracked = IdleTrackingBody::new(body, idle_state.clone());
+                    let new_body = Body::new(tracked);
+                    Ok(Response::from_parts(parts, new_body))
+                }
+                Err(e) => {
+                    idle_state.in_flight.fetch_sub(1, Ordering::SeqCst);
+                    idle_state.touch();
+                    Err(e)
+                }
+            }
         })
     }
 }

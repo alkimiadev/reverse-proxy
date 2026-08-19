@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use axum::routing::get;
 use axum::Router;
@@ -33,5 +34,36 @@ impl TestUpstream {
 
     pub async fn spawn_ok() -> Self {
         Self::spawn(|| Router::new().route("/", get(|| async { "ok" }))).await
+    }
+
+    /// Upstream that emits one chunk every `chunk_interval` for `num_chunks`
+    /// chunks, then ends. The body stream outlasts the idle timeout so the
+    /// watchdog's behaviour for in-progress streaming responses is observable.
+    /// Emits `b"<n>"` per chunk so the client can verify it received the whole
+    /// stream.
+    pub async fn spawn_slow_stream(chunk_interval: Duration, num_chunks: usize) -> Self {
+        Self::spawn(move || {
+            let interval = chunk_interval;
+            let n = num_chunks;
+            Router::new().route(
+                "/",
+                get(move || async move {
+                    let (tx, rx) = tokio::sync::mpsc::channel::<
+                        Result<axum::body::Bytes, std::convert::Infallible>,
+                    >(16);
+                    tokio::spawn(async move {
+                        for i in 0..n {
+                            tokio::time::sleep(interval).await;
+                            let _ = tx
+                                .send(Ok(format!("<{i}>").into_bytes().into()))
+                                .await;
+                        }
+                    });
+                    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+                    axum::body::Body::from_stream(stream)
+                }),
+            )
+        })
+        .await
     }
 }
