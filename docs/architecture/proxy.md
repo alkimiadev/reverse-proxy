@@ -139,7 +139,7 @@ existing `X-Forwarded-For` headers from the client cannot be trusted.
 
 | Header | Value Source | Notes |
 |--------|-------------|-------|
-| `Host` | Original request `Host` header | Preserved as-is |
+| `Host` | Client's host: the literal `Host` header for HTTP/1.1, or the `:authority` pseudo-header (request URI authority) for HTTP/2 | Reconstructed for HTTP/2, which carries no literal `Host` header (RFC 9113 §8.3.1). Sent as `127.0.0.1:3000` otherwise, breaking backends that build absolute URLs from it (e.g. Gitea). If both URI authority and `Host` header are present, the authority wins. |
 | `X-Real-IP` | `ConnectInfo<SocketAddr>` remote IP | Set to client's IP address |
 | `X-Forwarded-For` | `ConnectInfo<SocketAddr>` remote IP | **Replaced**, not appended. The proxy is the edge proxy — there are no trusted proxies upstream, so existing `X-Forwarded-For` values from the client cannot be trusted. |
 | `X-Forwarded-Proto` | Determined by which listener port received the request | `https` for requests on the listener's `https_port`, `http` for requests on the listener's `http_port`. Note: since the TLS-terminating listener only receives HTTPS connections, this is always `"https"` in practice. The HTTP redirect listener sends a 301 redirect rather than proxying, so `X-Forwarded-Proto` is not set there. See OQ-11. |
@@ -159,7 +159,8 @@ The proxy handler constructs a new request to the upstream:
    return 502 Bad Gateway and log the error at `warn` level. The proxy must
    never silently drop parts of the URI (such as the query string) — a
    malformed upstream URI is an error, not a recoverable condition.
-2. Copy the request method, headers, and body from the original
+2. Copy the request method, headers, and body from the original, normalizing
+   the `Host` header to the client's host (see the table above)
 3. Inject proxy headers (X-Real-IP, X-Forwarded-For, X-Forwarded-Proto)
 4. Remove hop-by-hop headers (Connection, Keep-Alive, Transfer-Encoding, etc.)
 5. Send the request via a shared hyper Client instance

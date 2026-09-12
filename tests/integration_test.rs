@@ -14,6 +14,7 @@ use reverse_proxy::config::dynamic_config::{
 };
 use reverse_proxy::proxy::body_limit::DEFAULT_BODY_LIMIT_BYTES;
 use reverse_proxy::proxy::router_with_body_limit;
+use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_upstream_spawn_and_connect() {
@@ -564,6 +565,130 @@ async fn test_http_redirect_acme_challenge_returns_404() {
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
 
     handle.abort();
+}
+
+async fn spawn_echoing_upstream() -> helpers::http_test_helper::TestUpstream {
+    helpers::http_test_helper::TestUpstream::spawn(|| {
+        Router::new().route(
+            "/",
+            get(|req: axum::extract::Request| async move {
+                let host = req
+                    .headers()
+                    .get("host")
+                    .map(|v| v.to_str().unwrap().to_string())
+                    .unwrap_or_default();
+                let proto = req
+                    .headers()
+                    .get("x-forwarded-proto")
+                    .map(|v| v.to_str().unwrap().to_string())
+                    .unwrap_or_default();
+                format!("host={}|proto={}", host, proto)
+            }),
+        )
+    })
+    .await
+}
+
+fn make_site_config(upstream_addr: &str) -> SiteConfig {
+    SiteConfig {
+        host: "test.local".to_string(),
+        upstream: upstream_addr.to_string(),
+        upstream_scheme: "http".to_string(),
+        upstream_connect_timeout_secs: 5,
+        upstream_request_timeout_secs: 60,
+    }
+}
+
+fn make_dynamic_config_with_site(upstream_addr: &str) -> DynamicConfig {
+    DynamicConfig::from_sites(
+        vec![make_site_config(upstream_addr)],
+        RateLimitConfig {
+            requests_per_second: 100,
+            burst: 100,
+        },
+        BodyConfig {
+            limit_bytes: 104857600,
+        },
+    )
+}
+
+fn make_https_test_proxy_state(upstream_addr: &str) -> Arc<reverse_proxy::proxy::ProxyState> {
+    Arc::new(reverse_proxy::proxy::ProxyState {
+        config: Arc::new(ArcSwap::from_pointee(make_dynamic_config_with_site(
+            upstream_addr,
+        ))),
+        http_client: reverse_proxy::proxy::create_http_client(),
+        https_client: reverse_proxy::proxy::create_https_client(),
+    })
+}
+
+// Regression test: Gitea's self-check reported "Current URL doesn't match the
+// URL seen by Gitea" because HTTP/2 requests carried the upstream authority
+// (127.0.0.1:3000) as the Host header instead of the client's :authority
+// (test.local). HTTP/2 requests have no literal Host header, so the proxy
+// must reconstruct it from the request URI's authority. Without the fix, the
+// hyper-util client (set_host=true) inserts the upstream authority.
+#[tokio::test]
+async fn test_proxy_forwards_client_authority_as_host() {
+    let upstream = spawn_echoing_upstream().await;
+    let upstream_addr = format!("127.0.0.1:{}", upstream.addr.port());
+    let proxy_state = make_https_test_proxy_state(&upstream_addr);
+    let config_arc = Arc::new(ArcSwap::from_pointee(make_dynamic_config_with_site(
+        &upstream_addr,
+    )));
+    let rate_limiter =
+        Arc::new(reverse_proxy::rate_limit::RateLimiter::new(config_arc.clone()));
+    let router = reverse_proxy::proxy::build_router(proxy_state, config_arc, rate_limiter);
+
+    // Simulates an HTTP/2 request translated by hyper: the :authority
+    // pseudo-header becomes the URI authority and no Host header is present.
+    let mut req = axum::http::Request::builder()
+        .method("GET")
+        .uri("http://test.local/")
+        .header("x-forwarded-proto", "https")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 54321)),
+    ));
+    let resp = router.oneshot(req).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert_eq!(body, "host=test.local|proto=https");
+
+    let _ = upstream.shutdown_tx.send(());
+}
+
+// HTTP/1.1 requests carry a real Host header and an origin-form request
+// target — the Host header must be routed on and forwarded unchanged.
+#[tokio::test]
+async fn test_proxy_preserves_client_host_header_for_http1() {
+    let upstream = spawn_echoing_upstream().await;
+    let upstream_addr = format!("127.0.0.1:{}", upstream.addr.port());
+    let proxy_state = make_https_test_proxy_state(&upstream_addr);
+    let config_arc = Arc::new(ArcSwap::from_pointee(make_dynamic_config_with_site(
+        &upstream_addr,
+    )));
+    let rate_limiter =
+        Arc::new(reverse_proxy::rate_limit::RateLimiter::new(config_arc.clone()));
+    let router = reverse_proxy::proxy::build_router(proxy_state, config_arc, rate_limiter);
+
+    let mut req = axum::http::Request::builder()
+        .method("GET")
+        .uri("/")
+        .header("host", "test.local")
+        .header("x-forwarded-proto", "https")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 54322)),
+    ));
+    let resp = router.oneshot(req).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert_eq!(body, "host=test.local|proto=https");
+
+    let _ = upstream.shutdown_tx.send(());
 }
 
 fn write_valid_config(dir: &Path) -> std::path::PathBuf {

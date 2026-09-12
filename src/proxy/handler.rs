@@ -6,7 +6,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
-use axum::http::{Request, StatusCode, Uri};
+use axum::http::{HeaderName, HeaderValue, Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -216,12 +216,40 @@ fn build_upstream_uri(scheme: &str, upstream: &str, original_uri: &Uri) -> Resul
 }
 
 fn build_upstream_request(req: Request<Body>, upstream_uri: &Uri) -> anyhow::Result<Request<Body>> {
+    let mut req = req;
     let mut builder = Request::builder()
         .method(req.method().clone())
         .uri(upstream_uri.clone());
 
+    // The forwarded Host header must be the host the client used (e.g.
+    // "git.alk.dev"), not the upstream authority (e.g. "127.0.0.1:3000"),
+    // otherwise backends like Gitea generate wrong absolute URLs.
+    //
+    // RFC 9113 §8.3.1: in HTTP/2 the client's host lives in the `:authority`
+    // pseudo-header, which hyper surfaces as the request URI's authority; no
+    // literal `host` header exists. For HTTP/1.1 the request URI is
+    // origin-form (no authority) and the client's `host` header is the
+    // authority. When both are present, the URI authority wins so a stale or
+    // spoofed `host` header cannot override the routed host.
+    let host_header: Option<HeaderValue> = if let Some(authority) = req.uri().authority() {
+        let value = match authority.port_u16() {
+            Some(port) => format!("{}:{}", authority.host(), port),
+            None => authority.host().to_string(),
+        };
+        Some(HeaderValue::from_str(&value).map_err(|e| {
+            anyhow::anyhow!("client authority {:?} is not a valid Host header: {}", value, e)
+        })?)
+    } else {
+        req.headers().get(axum::http::header::HOST).cloned()
+    };
+    req.headers_mut().remove(HeaderName::from_static("host"));
+
     for (name, value) in req.headers().iter() {
         builder = builder.header(name.as_str(), value);
+    }
+
+    if let Some(host) = host_header {
+        builder = builder.header(HeaderName::from_static("host"), host);
     }
 
     builder.body(req.into_body()).map_err(Into::into)
@@ -392,5 +420,91 @@ mod tests {
         let uri: Uri = "/secure".parse().unwrap();
         let result = build_upstream_uri("https", "upstream.example.com", &uri).unwrap();
         assert_eq!(result.to_string(), "https://upstream.example.com/secure");
+    }
+
+    fn make_request(host_header: Option<&str>, uri: &str) -> Request<Body> {
+        let mut builder = Request::builder().method("GET").uri(uri);
+        if let Some(h) = host_header {
+            builder = builder.header("host", h);
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn build_upstream_request_sets_host_from_upstream_uri() {
+        let uri: Uri = "http://127.0.0.1:3000/".parse().unwrap();
+        let req = make_request(None, "http://127.0.0.1:3000/");
+        let upstream_req = build_upstream_request(req, &uri).unwrap();
+        assert_eq!(upstream_req.headers().get("host").unwrap(), "127.0.0.1:3000");
+    }
+
+    #[tokio::test]
+    async fn build_upstream_request_includes_authority_port_in_host() {
+        let uri: Uri = "http://git.alk.dev:8443/".parse().unwrap();
+        let req = make_request(None, "http://git.alk.dev:8443/");
+        let upstream_req = build_upstream_request(req, &uri).unwrap();
+        assert_eq!(upstream_req.headers().get("host").unwrap(), "git.alk.dev:8443");
+    }
+
+    #[tokio::test]
+    async fn build_upstream_request_reconstructs_host_from_authority_for_h2() {
+        let uri: Uri = "http://127.0.0.1:3000/".parse().unwrap();
+        let req = make_request(None, "http://127.0.0.1:3000/");
+        let upstream_req = build_upstream_request(req, &uri).unwrap();
+        assert_eq!(upstream_req.headers().get("host").unwrap(), "127.0.0.1:3000");
+    }
+
+    #[tokio::test]
+    async fn build_upstream_request_h2_authority_wins_over_stale_host_header() {
+        let uri: Uri = "http://127.0.0.1:3000/".parse().unwrap();
+        let req = make_request(Some("evil.example.com"), "http://127.0.0.1:3000/");
+        let upstream_req = build_upstream_request(req, &uri).unwrap();
+        assert_eq!(upstream_req.headers().get("host").unwrap(), "127.0.0.1:3000");
+    }
+
+    #[tokio::test]
+    async fn build_upstream_request_omits_default_port_in_host() {
+        let uri: Uri = "http://git.example.com/".parse().unwrap();
+        let req = make_request(None, "http://git.example.com/");
+        let upstream_req = build_upstream_request(req, &uri).unwrap();
+        assert_eq!(upstream_req.headers().get("host").unwrap(), "git.example.com");
+    }
+
+    #[tokio::test]
+    async fn build_upstream_request_brackets_ipv6_authority() {
+        let uri: Uri = "http://[::1]:3000/".parse().unwrap();
+        let req = make_request(None, "http://[::1]:3000/");
+        let upstream_req = build_upstream_request(req, &uri).unwrap();
+        assert_eq!(upstream_req.headers().get("host").unwrap(), "[::1]:3000");
+    }
+
+    #[tokio::test]
+    async fn build_upstream_request_keeps_method_headers_and_body() {
+        let uri: Uri = "http://127.0.0.1:3000/api".parse().unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("http://127.0.0.1:3000/api")
+            .header("x-custom", "yes")
+            .body(Body::from("payload"))
+            .unwrap();
+        let upstream_req = build_upstream_request(req, &uri).unwrap();
+        assert_eq!(upstream_req.method(), "POST");
+        assert_eq!(upstream_req.uri().path(), "/api");
+        assert_eq!(upstream_req.headers().get("x-custom").unwrap(), "yes");
+        assert_eq!(
+            http_body_util::BodyExt::collect(upstream_req.into_body())
+                .await
+                .unwrap()
+                .to_bytes(),
+            "payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_upstream_request_h1_client_host_header_is_forwarded() {
+        let uri: Uri = "/some/path".parse().unwrap();
+        let req = make_request(Some("git.alk.dev"), "/some/path");
+        let upstream_req = build_upstream_request(req, &uri).unwrap();
+        assert_eq!(upstream_req.headers().get("host").unwrap(), "git.alk.dev");
     }
 }
