@@ -8,16 +8,27 @@ reviewed_code:
   - /etc/reverse-proxy/config.toml (dev1 deploy)
 reviewer: code-reviewer
 based_on: docs/reviews/009-fix-never-deployed-and-streaming-body-bug.md
-trigger: Production incident on dev1 (2026-09-11 ~21:00-23:00 UTC) — EMFILE
+trigger: >-
+  Production incident on dev1 (2026-09-11 ~21:00-23:00 UTC) — EMFILE
   busy-loop wrote ~6M ERROR lines (~1.9 GB log) in 2 hours
 fixes:
-  - M1: MITIGATED in production 2026-09-12 — container RLIMIT_NOFILE raised
+  - >-
+    M1: MITIGATED in production 2026-09-12 — container RLIMIT_NOFILE raised
     to 8192 (compose ulimits) and max_connections lowered 1024 → 800.
-    Code fixes (C1 backoff, C2 validation) remain open.
-  - C1: FIXED 2026-09-13 — accept-loop error classification + backoff +
+    Code fixes (C1 backoff, C2 validation) remained open.
+  - >-
+    C1: FIXED 2026-09-13 — accept-loop error classification + backoff +
     signature-keyed log de-duplication (src/server.rs).
-  - C2: OPEN — no startup cross-check that max_connections fits under
-    RLIMIT_NOFILE with headroom.
+  - >-
+    C3: OPEN — next priority. No TLS handshake timeout; stalled handshakes
+    hold an FD + a semaphore permit indefinitely (src/server.rs:370).
+  - >-
+    C4: OPEN — connection semaphore is per-listener (src/server.rs:338), so
+    the effective cap is max_connections × listeners; sequence before C2 so
+    the RLIMIT cross-check uses the real FD budget.
+  - >-
+    C2: OPEN — no startup cross-check that max_connections fits under
+    RLIMIT_NOFILE with headroom. Sequenced after C3/C4.
 ---
 
 # Review #010 — EMFILE Accept-Loop Flood (6M ERROR lines, 1.9 GB log in 2 hours)
@@ -251,7 +262,7 @@ observed limit).
 
 Residual risk after mitigation: none identified for FD exhaustion at
 current traffic (peak concurrent connections observed ≪ 800); the code
-findings C1/C2 remain the durable fix.
+findings C3/C4/C2 remain the durable fix (C1 landed 2026-09-13).
 
 ## Traffic-analysis side note (from the same investigation)
 
@@ -277,14 +288,23 @@ behavior, which is exactly what made the EMFILE state reachable.
 
 1. ~~Land C1 (accept-loop error backoff + log de-duplication)~~ — DONE
    2026-09-13 (see Finding C1).
-2. Land C2 (RLIMIT cross-check at startup) with a prominent warning or
-   hard validation error. Must account for C4 (per-listener semaphore
-   multiplication) when computing the FD budget.
-3. Land C3 (TLS handshake timeout) — bound stalled handshakes so they
+2. Land C3 (TLS handshake timeout) — bound stalled handshakes so they
    cannot hold FD + permit indefinitely; directly closes the crawler
-   slow-handshake vector described under "Trigger conditions".
-4. Consider C4 (shared connection semaphore across listeners) so
-   `max_connections` is a global cap rather than per-listener.
+   slow-handshake vector described under "Trigger conditions". **Next
+   priority**: it is the likely actual trigger of the incident (stalled
+   crawler handshakes under the pre-mitigation 1024 cap), it is the only
+   finding that defends against a live attacker (slowloris amplifier),
+   and it does not interact with C2/C4 design decisions.
+3. Land C4 (shared connection semaphore across listeners) so
+   `max_connections` is a global cap rather than per-listener. Sequenced
+   before C2 because the RLIMIT cross-check's FD budget depends on the
+   final semaphore topology (shared vs per-listener).
+4. Land C2 (RLIMIT cross-check at startup) with a prominent warning or
+   hard validation error. Must account for C4 (per-listener semaphore
+   multiplication → shared after C4 lands) when computing the FD budget.
+   Lower urgency after M1: with the deploy baseline (`nofile 8192`,
+   `max_connections 800`) the ceiling is ~10% of the limit, so C2 is a
+   validation guard, not an active exposure.
 5. Consider a doc note in `docs/architecture/operations.md` describing the
    nofile/max_connections relationship (the mitigation values above are a
    working baseline: `nofile 8192`, `max_connections 800`).
