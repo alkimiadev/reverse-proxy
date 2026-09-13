@@ -20,8 +20,9 @@ fixes:
     C1: FIXED 2026-09-13 — accept-loop error classification + backoff +
     signature-keyed log de-duplication (src/server.rs).
   - >-
-    C3: OPEN — next priority. No TLS handshake timeout; stalled handshakes
-    hold an FD + a semaphore permit indefinitely (src/server.rs:370).
+    C3: FIXED 2026-09-13 — TLS handshake timeout (tls_handshake_timeout_secs,
+    default 10s) wraps tls_acceptor.accept() in src/server.rs; stalled
+    handshakes release FD + permit.
   - >-
     C4: OPEN — connection semaphore is per-listener (src/server.rs:338), so
     the effective cap is max_connections × listeners; sequence before C2 so
@@ -177,14 +178,16 @@ Notes from implementation:
   accept errors (axum 0.8.9 `src/serve/listener.rs` →
   `handle_accept_error`). No change needed there; the busy-spin existed
   only in the custom HTTPS loop.
-- Two follow-up findings surfaced while fixing C1 (still open, tracked
-  in "Recommended next steps"):
-  - **C3 (new)**: `tls_acceptor.accept()` has no timeout — a stalled TLS
-    handshake holds an FD *and* a semaphore permit indefinitely (the idle
-    watchdog only starts after the handshake completes). This is the
-    likely actual FD-exhaustion vector for slow/held crawler
+- Two follow-up findings surfaced while fixing C1 (tracked in
+  "Recommended next steps"):
+  - ~~**C3 (new)**~~ — **FIXED 2026-09-13**: `tls_acceptor.accept()` had
+    no timeout, so a stalled TLS handshake held an FD *and* a semaphore
+    permit indefinitely (the idle watchdog only starts after the
+    handshake completes). Fixed via `tls_handshake_timeout_secs`
+    (default 10s) wrapping the accept in `tokio::time::timeout`. This
+    was the likely actual FD-exhaustion vector for slow/held crawler
     handshakes, and a slowloris amplifier.
-  - **C4 (new)**: `conn_sem` is per-listener (`main.rs` spawns one
+  - **C4 (open)**: `conn_sem` is per-listener (`main.rs` spawns one
     `serve_https_listener` per listener, each creating its own
     semaphore), so the effective connection cap is
     `max_connections × listeners`. Any C2 RLIMIT cross-check must
@@ -262,7 +265,7 @@ observed limit).
 
 Residual risk after mitigation: none identified for FD exhaustion at
 current traffic (peak concurrent connections observed ≪ 800); the code
-findings C3/C4/C2 remain the durable fix (C1 landed 2026-09-13).
+findings C4/C2 remain the durable fix (C1 + C3 landed 2026-09-13).
 
 ## Traffic-analysis side note (from the same investigation)
 
@@ -288,13 +291,13 @@ behavior, which is exactly what made the EMFILE state reachable.
 
 1. ~~Land C1 (accept-loop error backoff + log de-duplication)~~ — DONE
    2026-09-13 (see Finding C1).
-2. Land C3 (TLS handshake timeout) — bound stalled handshakes so they
-   cannot hold FD + permit indefinitely; directly closes the crawler
-   slow-handshake vector described under "Trigger conditions". **Next
-   priority**: it is the likely actual trigger of the incident (stalled
-   crawler handshakes under the pre-mitigation 1024 cap), it is the only
-   finding that defends against a live attacker (slowloris amplifier),
-   and it does not interact with C2/C4 design decisions.
+2. ~~Land C3 (TLS handshake timeout)~~ — DONE 2026-09-13. New static config
+   `tls_handshake_timeout_secs` (default 10s, must be > 0) wraps
+   `tls_acceptor.accept()` in `tokio::time::timeout`
+   (`accept_tls_with_timeout()`, src/server.rs). On timeout the handshake
+   future is dropped, releasing the TCP FD and the semaphore permit; the
+   idle watchdog never needs to run for a stalled handshake. Closes the
+   crawler slow-handshake vector described under "Trigger conditions".
 3. Land C4 (shared connection semaphore across listeners) so
    `max_connections` is a global cap rather than per-listener. Sequenced
    before C2 because the RLIMIT cross-check's FD budget depends on the

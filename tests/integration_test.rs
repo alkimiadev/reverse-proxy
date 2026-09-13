@@ -1164,6 +1164,19 @@ mod idle_timeout_tests {
         tokio::task::JoinHandle<()>,
         tokio::sync::watch::Sender<bool>,
     ) {
+        start_test_https_server_with_timeouts(idle_timeout, Duration::from_secs(10), upstream).await
+    }
+
+    async fn start_test_https_server_with_timeouts(
+        idle_timeout: Duration,
+        handshake_timeout: Duration,
+        upstream: String,
+    ) -> (
+        std::net::SocketAddr,
+        Arc<InFlightCounter>,
+        tokio::task::JoinHandle<()>,
+        tokio::sync::watch::Sender<bool>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let tls_acceptor = make_test_tls_acceptor();
@@ -1181,6 +1194,7 @@ mod idle_timeout_tests {
                 shutdown_rx,
                 in_flight_clone,
                 idle_timeout,
+                handshake_timeout,
                 1024,
             )
             .await;
@@ -1433,6 +1447,95 @@ mod idle_timeout_tests {
                 }
             }
         }
+
+        let _ = upstream.shutdown_tx.send(());
+    }
+
+    // Reproducer for review #010 C3: a client that opens a TCP connection but
+    // never sends a TLS ClientHello must not hold its FD + semaphore permit
+    // indefinitely. The server must close the stalled handshake after
+    // tls_handshake_timeout and release the permit.
+    #[tokio::test]
+    async fn stalled_tls_handshake_closed_after_timeout_and_permit_released() {
+        let handshake_timeout = Duration::from_millis(300);
+        let upstream = helpers::http_test_helper::TestUpstream::spawn_ok().await;
+        let upstream_addr = format!("127.0.0.1:{}", upstream.addr.port());
+        let (addr, in_flight, _handle, _shutdown_tx) =
+            start_test_https_server_with_timeouts(
+                Duration::from_secs(60),
+                handshake_timeout,
+                upstream_addr,
+            )
+            .await;
+
+        let stalled = tokio::net::TcpStream::connect(addr).await.unwrap();
+        // Hold the connection open without sending anything (stalled handshake).
+
+        // Wait past the handshake timeout.
+        tokio::time::sleep(handshake_timeout + Duration::from_millis(500)).await;
+
+        // The server must have dropped the stalled connection: reading from it
+        // should yield EOF (or an error), not hang.
+        let mut stalled = stalled;
+        let mut buf = [0u8; 16];
+        let read_result =
+            tokio::time::timeout(Duration::from_secs(2), stalled.read(&mut buf)).await;
+        let closed = match read_result {
+            Err(_) => panic!("stalled handshake was not closed by the server"),
+            Ok(Ok(0)) => true,
+            Ok(Ok(_)) => false,
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => true,
+            Ok(Err(_)) => true,
+        };
+        assert!(
+            closed,
+            "server should close stalled TLS handshake after timeout"
+        );
+
+        // The semaphore permit and in-flight guard must have been released.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            in_flight.count(),
+            0,
+            "in-flight count should return to 0 after stalled handshake closed"
+        );
+
+        let _ = upstream.shutdown_tx.send(());
+    }
+
+    // A real TLS handshake must complete comfortably within the timeout —
+    // the timeout must only kill stalled handshakes, not legitimate clients.
+    #[tokio::test]
+    async fn real_handshake_completes_within_handshake_timeout() {
+        let handshake_timeout = Duration::from_millis(300);
+        let upstream = helpers::http_test_helper::TestUpstream::spawn_ok().await;
+        let upstream_addr = format!("127.0.0.1:{}", upstream.addr.port());
+        let (addr, in_flight, _handle, _shutdown_tx) =
+            start_test_https_server_with_timeouts(
+                Duration::from_secs(60),
+                handshake_timeout,
+                upstream_addr,
+            )
+            .await;
+
+        let mut tls_stream = connect_tls(addr).await;
+
+        tls_stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: test.local\r\nConnection: keep-alive\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut buf = vec![0u8; 4096];
+        let n = tokio::time::timeout(Duration::from_secs(2), tls_stream.read(&mut buf))
+            .await
+            .expect("timeout waiting for response")
+            .expect("read error");
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "expected a real 200 round-trip, got: {response}"
+        );
+        assert_eq!(in_flight.count(), 1, "connection should remain in-flight");
 
         let _ = upstream.shutdown_tx.send(());
     }

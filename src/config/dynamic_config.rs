@@ -189,6 +189,9 @@ fn diff_static_config(old: &StaticConfig, new: &StaticConfig) -> Vec<String> {
     if old.connection_idle_timeout_secs != new.connection_idle_timeout_secs {
         changes.push("connection_idle_timeout_secs".to_string());
     }
+    if old.tls_handshake_timeout_secs != new.tls_handshake_timeout_secs {
+        changes.push("tls_handshake_timeout_secs".to_string());
+    }
     if old.max_connections != new.max_connections {
         changes.push("max_connections".to_string());
     }

@@ -108,6 +108,26 @@ async fn handle_accept_error(reporter: &AcceptErrorReporter, e: std::io::Error) 
     }
 }
 
+pub const DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+
+async fn accept_tls_with_timeout(
+    tls_acceptor: TlsAcceptor,
+    tcp_stream: tokio::net::TcpStream,
+    timeout: Duration,
+) -> Result<tokio_rustls::server::TlsStream<tokio::net::TcpStream>, AcceptTlsError> {
+    match tokio::time::timeout(timeout, tls_acceptor.accept(tcp_stream)).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(e)) => Err(AcceptTlsError::Handshake(e)),
+        Err(_) => Err(AcceptTlsError::Timeout),
+    }
+}
+
+#[derive(Debug)]
+pub enum AcceptTlsError {
+    Handshake(std::io::Error),
+    Timeout,
+}
+
 pub struct InFlightCounter {
     count: AtomicUsize,
 }
@@ -325,6 +345,7 @@ async fn idle_watchdog(idle_state: Arc<IdleState>, timeout: Duration) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve_https_listener(
     tcp_listener: TcpListener,
     tls_acceptor: TlsAcceptor,
@@ -332,6 +353,7 @@ pub async fn serve_https_listener(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     in_flight: Arc<InFlightCounter>,
     connection_idle_timeout: Duration,
+    tls_handshake_timeout: Duration,
     max_connections: usize,
 ) {
     let local_addr = tcp_listener.local_addr();
@@ -367,13 +389,29 @@ pub async fn serve_https_listener(
                     let _guard = InFlightGuard::new(in_flight.clone());
                     let _permit = permit;
 
-                    let tls_stream = match tls_acceptor.accept(tcp_stream).await {
+                    let tls_result = match accept_tls_with_timeout(
+                        tls_acceptor,
+                        tcp_stream,
+                        tls_handshake_timeout,
+                    )
+                    .await
+                    {
                         Ok(stream) => stream,
-                        Err(e) => {
+                        Err(AcceptTlsError::Timeout) => {
+                            warn!(
+                                remote_addr = %remote_addr,
+                                timeout_secs = tls_handshake_timeout.as_secs(),
+                                "TLS handshake timeout; closing stalled handshake"
+                            );
+                            return;
+                        }
+                        Err(AcceptTlsError::Handshake(e)) => {
                             warn!(error = %e, "TLS handshake failed");
                             return;
                         }
                     };
+
+                    let tls_stream = tls_result;
 
                     let alpn = tls_stream.get_ref().1.alpn_protocol();
                     let is_h2 = alpn == Some(b"h2");
@@ -588,6 +626,142 @@ mod tests {
         reporter.report(&Error::from_raw_os_error(libc::ENFILE));
         let reports = reporter.reports.lock().unwrap();
         assert_eq!(reports.len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn accept_tls_with_timeout_times_out_on_stalled_handshake() {
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let mut stream = stream;
+            let mut buf = [0u8; 16];
+            let _ = stream.read(&mut buf).await;
+        });
+
+        let (tcp_stream, _remote_addr) = listener.accept().await.unwrap();
+        let tls_acceptor = test_tls_acceptor();
+
+        let start = tokio::time::Instant::now();
+        let result =
+            accept_tls_with_timeout(tls_acceptor, tcp_stream, Duration::from_secs(3)).await;
+        client.abort();
+
+        assert!(matches!(result, Err(AcceptTlsError::Timeout)));
+        assert_eq!(start.elapsed(), Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    async fn accept_tls_with_timeout_completes_real_handshake() {
+        use tokio::net::TcpListener;
+        use tokio_rustls::TlsConnector;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client_config = test_client_tls_config();
+        let connector = TlsConnector::from(client_config);
+        let server_name =
+            rustls::pki_types::ServerName::try_from("test.local".to_string()).unwrap();
+
+        let client = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            connector.connect(server_name, stream).await
+        });
+
+        let (tcp_stream, _remote_addr) = listener.accept().await.unwrap();
+        let tls_acceptor = test_tls_acceptor();
+
+        let result = accept_tls_with_timeout(
+            tls_acceptor,
+            tcp_stream,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(result.is_ok(), "real handshake should complete: {result:?}");
+        client.abort();
+    }
+
+    fn test_tls_acceptor() -> TlsAcceptor {
+        use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+
+        let mut params = rcgen::CertificateParams::new(vec!["test.local".to_string()]).unwrap();
+        params.distinguished_name = rcgen::DistinguishedName::new();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "test.local");
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+        let cert_der = cert.der().clone();
+        let key_der = key_pair.serialize_der();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
+
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], private_key)
+            .unwrap();
+        TlsAcceptor::from(std::sync::Arc::new(config))
+    }
+
+    fn test_client_tls_config() -> std::sync::Arc<rustls::ClientConfig> {
+        let config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(UnverifiedCert))
+            .with_no_client_auth();
+        std::sync::Arc::new(config)
+    }
+
+    #[derive(Debug)]
+    struct UnverifiedCert;
+
+    impl rustls::client::danger::ServerCertVerifier for UnverifiedCert {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &rustls::pki_types::CertificateDer<'_>,
+            _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+            _server_name: &rustls::pki_types::ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls::pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls::pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            vec![
+                rustls::SignatureScheme::RSA_PKCS1_SHA256,
+                rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+                rustls::SignatureScheme::RSA_PSS_SHA256,
+                rustls::SignatureScheme::RSA_PKCS1_SHA384,
+                rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+                rustls::SignatureScheme::RSA_PSS_SHA384,
+                rustls::SignatureScheme::RSA_PKCS1_SHA512,
+                rustls::SignatureScheme::RSA_PSS_SHA512,
+                rustls::SignatureScheme::ED25519,
+            ]
+        }
     }
 
     #[tokio::test(start_paused = true)]

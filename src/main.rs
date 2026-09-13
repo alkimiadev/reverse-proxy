@@ -234,6 +234,9 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
             std::time::Duration::from_secs(
                 loaded_config.static_config.connection_idle_timeout_secs,
             ),
+            std::time::Duration::from_secs(
+                loaded_config.static_config.tls_handshake_timeout_secs,
+            ),
             loaded_config.static_config.max_connections,
         ));
 

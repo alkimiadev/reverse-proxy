@@ -79,6 +79,8 @@ pub enum ValidationError {
     AdminKeyPathTraversal { path: String },
     #[error("connection_idle_timeout_secs must be > 0, got {value}")]
     ConnectionIdleTimeoutZero { value: u64 },
+    #[error("tls_handshake_timeout_secs must be > 0, got {value}")]
+    TlsHandshakeTimeoutZero { value: u64 },
     #[error("max_connections must be > 0, got {value}")]
     MaxConnectionsZero { value: usize },
 }
@@ -292,6 +294,12 @@ pub fn validate(
         });
     }
 
+    if static_config.tls_handshake_timeout_secs == 0 {
+        errors.push(ValidationError::TlsHandshakeTimeoutZero {
+            value: static_config.tls_handshake_timeout_secs,
+        });
+    }
+
     if static_config.max_connections == 0 {
         errors.push(ValidationError::MaxConnectionsZero {
             value: static_config.max_connections,
@@ -393,6 +401,7 @@ mod tests {
             admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
             shutdown_timeout_secs: 30,
             connection_idle_timeout_secs: 60,
+            tls_handshake_timeout_secs: 10,
             max_connections: 1024,
             logging: LoggingConfig::default(),
         }
@@ -431,6 +440,7 @@ mod tests {
             admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
             shutdown_timeout_secs: 30,
             connection_idle_timeout_secs: 60,
+            tls_handshake_timeout_secs: 10,
             max_connections: 1024,
             logging: LoggingConfig::default(),
         }
@@ -1121,6 +1131,7 @@ mod tests {
             admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
             shutdown_timeout_secs: 30,
             connection_idle_timeout_secs: 60,
+            tls_handshake_timeout_secs: 10,
             max_connections: 1024,
             logging: LoggingConfig::default(),
         };
@@ -1338,6 +1349,19 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| matches!(e, ValidationError::ConnectionIdleTimeoutZero { value: 0 })));
+    }
+
+    #[test]
+    fn rule_tls_handshake_timeout_zero_rejected() {
+        let mut config = valid_static_config();
+        config.tls_handshake_timeout_secs = 0;
+        let dynamic = valid_dynamic_config();
+        let result = validate(&config, &dynamic, false);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::TlsHandshakeTimeoutZero { value: 0 })));
     }
 
     #[test]

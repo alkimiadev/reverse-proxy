@@ -13,6 +13,8 @@ pub struct StaticConfig {
     pub shutdown_timeout_secs: u64,
     #[serde(default = "default_connection_idle_timeout_secs")]
     pub connection_idle_timeout_secs: u64,
+    #[serde(default = "default_tls_handshake_timeout_secs")]
+    pub tls_handshake_timeout_secs: u64,
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
     #[serde(default)]
@@ -33,6 +35,10 @@ pub fn default_shutdown_timeout_secs() -> u64 {
 
 pub fn default_connection_idle_timeout_secs() -> u64 {
     60
+}
+
+pub fn default_tls_handshake_timeout_secs() -> u64 {
+    10
 }
 
 pub fn default_max_connections() -> usize {
@@ -213,6 +219,8 @@ upstream = "127.0.0.1:8080"
         shutdown_timeout_secs: u64,
         #[serde(default = "default_connection_idle_timeout_secs")]
         connection_idle_timeout_secs: u64,
+        #[serde(default = "default_tls_handshake_timeout_secs")]
+        tls_handshake_timeout_secs: u64,
         #[serde(default = "default_max_connections")]
         max_connections: usize,
         #[serde(default)]
@@ -232,6 +240,7 @@ upstream = "127.0.0.1:8080"
         assert_eq!(config.admin_key_path, "/etc/reverse-proxy/admin-key");
         assert_eq!(config.shutdown_timeout_secs, 30);
         assert_eq!(config.connection_idle_timeout_secs, 60);
+        assert_eq!(config.tls_handshake_timeout_secs, 10);
         assert_eq!(config.max_connections, 1024);
         assert_eq!(config.logging.level, "info");
         assert_eq!(config.logging.format, "text");
@@ -315,6 +324,8 @@ acme_cache_dir = "/tmp/cache"
             shutdown_timeout_secs: u64,
             #[serde(default = "default_connection_idle_timeout_secs")]
             connection_idle_timeout_secs: u64,
+            #[serde(default = "default_tls_handshake_timeout_secs")]
+            tls_handshake_timeout_secs: u64,
             #[serde(default = "default_max_connections")]
             max_connections: usize,
             #[serde(default)]
@@ -330,6 +341,7 @@ acme_cache_dir = "/tmp/cache"
         assert_eq!(config.admin_key_path, "/etc/reverse-proxy/admin-key");
         assert_eq!(config.shutdown_timeout_secs, 30);
         assert_eq!(config.connection_idle_timeout_secs, 60);
+        assert_eq!(config.tls_handshake_timeout_secs, 10);
         assert_eq!(config.max_connections, 1024);
         assert_eq!(config.logging.level, "info");
         assert_eq!(config.logging.format, "text");

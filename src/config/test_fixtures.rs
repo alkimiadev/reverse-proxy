@@ -23,6 +23,7 @@ pub fn test_static_config() -> StaticConfig {
         admin_key_path: "/etc/reverse-proxy/admin-key".to_string(),
         shutdown_timeout_secs: 30,
         connection_idle_timeout_secs: 60,
+        tls_handshake_timeout_secs: 10,
         max_connections: 1024,
         logging: LoggingConfig::default(),
     }

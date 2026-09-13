@@ -51,6 +51,8 @@ pub struct FullConfig {
     pub shutdown_timeout_secs: u64,
     #[serde(default = "static_config::default_connection_idle_timeout_secs")]
     pub connection_idle_timeout_secs: u64,
+    #[serde(default = "static_config::default_tls_handshake_timeout_secs")]
+    pub tls_handshake_timeout_secs: u64,
     #[serde(default = "static_config::default_max_connections")]
     pub max_connections: usize,
     #[serde(default)]
@@ -72,6 +74,7 @@ impl FullConfig {
             admin_key_path: self.admin_key_path,
             shutdown_timeout_secs: self.shutdown_timeout_secs,
             connection_idle_timeout_secs: self.connection_idle_timeout_secs,
+            tls_handshake_timeout_secs: self.tls_handshake_timeout_secs,
             max_connections: self.max_connections,
             logging: self.logging,
         };
