@@ -67,6 +67,10 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
 
     info!("reverse-proxy starting");
 
+    reverse_proxy::config::fd_budget::warn_if_default_nofile(
+        loaded_config.static_config.max_connections,
+    );
+
     let dynamic_config: DynamicConfig = loaded_config.dynamic_config;
     let config_arc = Arc::new(ArcSwap::from_pointee(dynamic_config));
 

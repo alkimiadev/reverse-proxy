@@ -67,6 +67,18 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig> {
         )
     })?;
 
+    let fd_errors = crate::config::fd_budget::validate_nofile(static_config.max_connections);
+    if !fd_errors.is_empty() {
+        anyhow::bail!(
+            "FD budget validation failed:\n{}",
+            fd_errors
+                .iter()
+                .map(|e| format!("  - {}", e))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
     Ok(LoadedConfig {
         static_config,
         dynamic_config,

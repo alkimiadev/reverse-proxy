@@ -11,6 +11,12 @@ services:
       - /var/lib/reverse-proxy/acme-cache:/var/lib/reverse-proxy/acme-cache
       - /var/log/reverse-proxy:/var/log/reverse-proxy
       - /etc/reverse-proxy/admin-key:/etc/reverse-proxy/admin-key:ro
+    # FD headroom: max_connections + 64 reserved must fit under this limit
+    # (see docs/architecture/operations.md "File Descriptor Budget", review #010 C2)
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
     networks:
       - proxy-net
     healthcheck:

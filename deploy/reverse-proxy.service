@@ -10,6 +10,10 @@ ExecStart=/usr/local/bin/reverse-proxy --config /etc/reverse-proxy/config.toml
 Restart=on-failure
 RestartSec=5
 
+# FD headroom: max_connections + 64 reserved must fit under this limit
+# (see docs/architecture/operations.md "File Descriptor Budget", review #010 C2)
+LimitNOFILE=8192
+
 # Security hardening
 NoNewPrivileges=yes
 ProtectSystem=strict

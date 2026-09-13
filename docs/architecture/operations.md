@@ -373,6 +373,44 @@ On SIGTERM or SIGINT, the proxy performs a graceful shutdown:
 The `shutdown_timeout_secs` is configurable in StaticConfig (default: 30
 seconds). See config.md for details.
 
+## File Descriptor Budget
+
+The connection semaphore (shared across all listeners, review #010 C4) caps
+concurrent client TLS connections at exactly `max_connections` process-wide.
+Each connection holds one FD, and the process needs additional FDs for the
+HTTPS/HTTP/health listener sockets, the log file, ACME renewal sockets,
+epoll/timer FDs, and stdin/stdout/stderr.
+
+At startup and on config reload, the proxy reads the process's soft
+`RLIMIT_NOFILE` (Unix; skipped when the limit is `RLIM_INFINITY`) and rejects
+the configuration if:
+
+```
+max_connections + 64 (reserved FDs) > soft RLIMIT_NOFILE
+```
+
+This guard exists because the semaphore is the intended protection against
+FD exhaustion — but before review #010 C2, nothing stopped it from being
+configured at or above the real ceiling, guaranteeing `EMFILE` under load
+(the review #010 incident shape).
+
+A soft limit at or below the Docker default (1024) also triggers a prominent
+startup warning even when the budget fits.
+
+### Recommended baselines
+
+| Environment | nofile | max_connections | Rationale |
+|-------------|--------|-----------------|-----------|
+| Docker / docker-compose | 8192 (`ulimits.nofile`) | 800–1024 | Working production baseline from review #010 M1: connection FDs ≈ 10% of the limit |
+| systemd | 8192 (`LimitNOFILE=`) | 800–1024 | Same headroom; set in the unit file's `[Service]` section |
+| Bare metal (high traffic) | ≥ 2 × max_connections | sized to traffic | Keep ≥ 50% headroom for non-connection FDs and bursts |
+
+Check what the running process actually sees:
+
+```bash
+cat /proc/$(pidof reverse-proxy)/limits | grep "open files"
+```
+
 ## Deployment
 
 ### Binary

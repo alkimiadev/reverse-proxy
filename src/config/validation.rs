@@ -83,6 +83,15 @@ pub enum ValidationError {
     TlsHandshakeTimeoutZero { value: u64 },
     #[error("max_connections must be > 0, got {value}")]
     MaxConnectionsZero { value: usize },
+    #[error(
+        "max_connections ({max_connections}) + reserved FDs ({reserved}) exceeds soft RLIMIT_NOFILE ({soft_limit}); \
+         raise nofile (docker-compose ulimits / systemd LimitNOFILE, e.g. 8192) or lower max_connections"
+    )]
+    MaxConnectionsExceedsNofile {
+        max_connections: usize,
+        soft_limit: u64,
+        reserved: u64,
+    },
 }
 
 pub fn validate(

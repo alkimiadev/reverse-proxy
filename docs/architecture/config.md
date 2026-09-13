@@ -469,6 +469,16 @@ On startup, the config is validated:
 23. `tls_handshake_timeout_secs` must be > 0. A zero value would immediately
      kill every TLS handshake, preventing any client connection from
      completing (review #010 C3).
+24. `max_connections` + 64 reserved FDs must fit under the process's soft
+    `RLIMIT_NOFILE` (checked at startup and on reload, Unix only; skipped
+    when the limit is `RLIM_INFINITY`). This is an environment-dependent
+    check, separate from the pure TOML rules above. With the connection
+    semaphore shared across listeners (review #010 C4), connection FDs are
+    capped at exactly `max_connections` process-wide; the reserved headroom
+    covers listener sockets, the log file, ACME renewal sockets, epoll/timer
+    FDs, and stdin/stdout/stderr. A soft limit at or below the Docker default
+    (1024) also triggers a prominent startup warning even when the budget
+    fits (review #010 C2).
 
 On SIGHUP reload, the same validation applies. If the new config fails
 validation, the reload is rejected and the old config remains active. An error

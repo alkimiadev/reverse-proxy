@@ -28,8 +28,10 @@ fixes:
     listeners (ConnectionSemaphore, src/server.rs); max_connections is now a
     process-wide cap, not max_connections × listeners.
   - >-
-    C2: OPEN — no startup cross-check that max_connections fits under
-    RLIMIT_NOFILE with headroom. Sequenced after C3/C4.
+    C2: FIXED 2026-09-13 — startup + reload cross-check that
+    max_connections + 64 reserved FDs fits under soft RLIMIT_NOFILE
+    (src/config/fd_budget.rs); warning when nofile ≤ Docker default 1024;
+    deploy files gain LimitNOFILE/ulimits 8192.
 ---
 
 # Review #010 — EMFILE Accept-Loop Flood (6M ERROR lines, 1.9 GB log in 2 hours)
@@ -232,6 +234,9 @@ implementation notes above.
 
 ## Finding C2: max_connections is not cross-checked against RLIMIT_NOFILE [config]
 
+**Status**: FIXED 2026-09-13. Startup and reload now enforce the FD budget
+(see "C2 fix" below).
+
 **Severity**: Medium — the semaphore is the intended protection against FD
 exhaustion, but it can be configured at/above the process's real ceiling,
 making it a false safety net.
@@ -260,14 +265,42 @@ project's Docker/systemd docs should recommend `nofile 8192` alongside
 `max_connections = 1024` (or vice versa: derive a sane default from the
 observed limit).
 
+**C2 fix (landed)**: new `src/config/fd_budget.rs` implements:
+
+- `soft_nofile_limit()` — `libc::getrlimit(RLIMIT_NOFILE)` wrapper; returns
+  `None` on `RLIM_INFINITY`, getrlimit failure, or non-Unix (check skipped).
+- `check_fd_budget()` — pure function: `max_connections + 64` must be
+  `<=` soft limit; unit-tested with synthetic values so tests never depend
+  on the runner's actual rlimit.
+- `validate_nofile()` — returns
+  `ValidationError::MaxConnectionsExceedsNofile` on breach. Wired into both
+  gates: `cli::load_config()` (startup + `--validate`, process exits
+  non-zero) and `ConfigReloadHandle::reload()` (SIGHUP + admin reload
+  rejected, old config stays active).
+- `warn_if_default_nofile()` — prominent startup warning when the soft
+  limit is ≤ 1024 (Docker default) even if the budget fits.
+- Reserved FDs = 64 (listener sockets + log file + ACME renewal + epoll/timer
+  + stdio). With the shared semaphore from C4, connection FDs are capped at
+  exactly `max_connections`, so this is the complete FD budget check.
+- `deploy/reverse-proxy.service` gains `LimitNOFILE=8192`,
+  `deploy/docker-compose.yml` gains `ulimits: nofile: 8192` (matching the
+  dev1 mitigation from M1), and `docs/architecture/operations.md` gains a
+  "File Descriptor Budget" section with recommended baselines.
+
+Design note: the environment-dependent check lives outside the pure
+`validate()` TOML rules (validation.rs stays deterministic and
+unit-testable in any sandbox); integration point is the two config gates,
+so both startup and reload enforce it.
+
 ## Finding M1 (mitigation): raise nofile + lower max_connections [deploy]
 
 **Status**: Applied 2026-09-12 (see Summary). Backups:
 `docker-compose.yml.bak.20260912-080241`, `config.toml.bak.20260912-080241`.
 
 Residual risk after mitigation: none identified for FD exhaustion at
-current traffic (peak concurrent connections observed ≪ 800); the code
-findings C2 remains the durable fix (C1 + C3 + C4 landed 2026-09-13).
+current traffic (peak concurrent connections observed ≪ 800). All code
+findings (C1 + C3 + C4 + C2) landed 2026-09-13; remaining items below are
+doc/deploy hygiene.
 
 ## Traffic-analysis side note (from the same investigation)
 
@@ -308,19 +341,22 @@ behavior, which is exactly what made the EMFILE state reachable.
    task. `max_connections` is now the process-wide concurrent TLS connection
    cap; the effective cap no longer scales with listener count. This is the
    topology C2's RLIMIT cross-check should assume.
-4. Land C2 (RLIMIT cross-check at startup) with a prominent warning or
-   hard validation error. The FD budget assumes a shared semaphore
-   (landed, see step 3): connection FDs are capped at `max_connections`
-   process-wide.
+4. ~~Land C2 (RLIMIT cross-check at startup) with a prominent warning or
+   hard validation error~~ — DONE 2026-09-13. `src/config/fd_budget.rs`
+   checks `max_connections + 64 <= soft RLIMIT_NOFILE` at startup and on
+   reload (hard error; the guaranteed-EMFILE shape from this incident is
+   rejected outright), warns at startup when nofile ≤ 1024, and skips the
+   check when the limit is `RLIM_INFINITY` or on non-Unix. Assumes the
+   shared semaphore topology from C4.
    Lower urgency after M1: with the deploy baseline (`nofile 8192`,
    `max_connections 800`) the ceiling is ~10% of the limit, so C2 is a
    validation guard, not an active exposure.
 5. Consider a doc note in `docs/architecture/operations.md` describing the
    nofile/max_connections relationship (the mitigation values above are a
    working baseline: `nofile 8192`, `max_connections 800`).
-6. Docker image: the deployment Dockerfile on dev1 is a two-line stub
+6. ~~Docker image: the deployment Dockerfile on dev1 is a two-line stub
    (FROM + COPY); if the project's own `deploy/Dockerfile` is ever used,
-   it should also set `ulimits` guidance or rely on compose as done here.
-   The repo's own `deploy/docker-compose.yml` still lacks the `ulimits`
-   block applied to dev1, and `deploy/reverse-proxy.service` lacks
-   `LimitNOFILE`.
+   it should also set `ulimits` guidance or rely on compose as done here.~~
+   DONE 2026-09-13: the repo's `deploy/docker-compose.yml` now includes the
+   `ulimits` block (matching dev1's M1 mitigation) and
+   `deploy/reverse-proxy.service` sets `LimitNOFILE=8192`.
