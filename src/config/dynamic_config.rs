@@ -159,6 +159,18 @@ impl ConfigReloadHandle {
             )
         })?;
 
+        let fd_errors = crate::config::fd_budget::validate_nofile(new_static.max_connections);
+        if !fd_errors.is_empty() {
+            anyhow::bail!(
+                "FD budget validation failed: {}",
+                fd_errors
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+
         let changed_fields = diff_static_config(&self.static_config.load(), &new_static);
 
         self.config.store(Arc::new(new_dynamic));
