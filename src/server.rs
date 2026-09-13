@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,6 +24,89 @@ use tower::Service;
 use tracing::{debug, error, info, warn};
 
 const HTTP2_KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
+
+const ACCEPT_BACKOFF_RESOURCE: Duration = Duration::from_secs(1);
+const ACCEPT_BACKOFF_OTHER: Duration = Duration::from_millis(100);
+const ACCEPT_ERROR_SUPPRESS: Duration = Duration::from_secs(10);
+
+fn is_transient_accept_error(e: &std::io::Error) -> bool {
+    matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted)
+}
+
+fn is_resource_accept_error(e: &std::io::Error) -> bool {
+    matches!(e.kind(), ErrorKind::ConnectionAborted)
+        || e.raw_os_error() == Some(libc::EMFILE)
+        || e.raw_os_error() == Some(libc::ENFILE)
+        || e.raw_os_error() == Some(libc::ENOBUFS)
+        || e.raw_os_error() == Some(libc::ENOMEM)
+}
+
+struct AcceptErrorReport {
+    last_log: Option<Instant>,
+    suppressed: usize,
+}
+
+impl AcceptErrorReport {
+    fn new() -> Self {
+        Self {
+            last_log: None,
+            suppressed: 0,
+        }
+    }
+
+    fn log(&mut self, error: &std::io::Error) {
+        self.suppressed += 1;
+        let should_emit = match self.last_log {
+            None => true,
+            Some(t) => t.elapsed() >= ACCEPT_ERROR_SUPPRESS,
+        };
+        if should_emit {
+            let suppressed = self.suppressed - 1;
+            if self.last_log.is_some() {
+                error!(
+                    error = %error,
+                    suppressed = suppressed,
+                    backoff_ms = ACCEPT_BACKOFF_RESOURCE.as_millis() as u64,
+                    "failed to accept TCP connection; backing off"
+                );
+            } else {
+                error!(error = %error, "failed to accept TCP connection; backing off");
+            }
+            self.last_log = Some(Instant::now());
+            self.suppressed = 0;
+        }
+    }
+}
+
+#[derive(Default)]
+struct AcceptErrorReporter {
+    reports: Mutex<HashMap<String, AcceptErrorReport>>,
+}
+
+impl AcceptErrorReporter {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn report(&self, error: &std::io::Error) {
+        let key = error.to_string();
+        if let Ok(mut reports) = self.reports.lock() {
+            reports.entry(key).or_insert_with(AcceptErrorReport::new).log(error);
+        }
+    }
+}
+
+async fn handle_accept_error(reporter: &AcceptErrorReporter, e: std::io::Error) {
+    if is_transient_accept_error(&e) {
+        return;
+    }
+    reporter.report(&e);
+    if is_resource_accept_error(&e) {
+        tokio::time::sleep(ACCEPT_BACKOFF_RESOURCE).await;
+    } else {
+        tokio::time::sleep(ACCEPT_BACKOFF_OTHER).await;
+    }
+}
 
 pub struct InFlightCounter {
     count: AtomicUsize,
@@ -251,6 +336,7 @@ pub async fn serve_https_listener(
 ) {
     let local_addr = tcp_listener.local_addr();
     let conn_sem = Arc::new(Semaphore::new(max_connections));
+    let accept_errors = Arc::new(AcceptErrorReporter::new());
 
     loop {
         tokio::select! {
@@ -258,7 +344,7 @@ pub async fn serve_https_listener(
                 let (tcp_stream, remote_addr) = match accept_result {
                     Ok(conn) => conn,
                     Err(e) => {
-                        error!(error = %e, "failed to accept TCP connection");
+                        handle_accept_error(&accept_errors, e).await;
                         continue;
                     }
                 };
@@ -272,6 +358,7 @@ pub async fn serve_https_listener(
                     Ok(permit) => permit,
                     Err(e) => {
                         error!(error = %e, "connection semaphore closed");
+                        tokio::time::sleep(ACCEPT_BACKOFF_OTHER).await;
                         continue;
                     }
                 };
@@ -421,7 +508,115 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Error;
     use std::time::Duration;
+
+    fn emfile() -> Error {
+        Error::from_raw_os_error(libc::EMFILE)
+    }
+
+    #[test]
+    fn transient_accept_errors_are_wouldblock_or_interrupted() {
+        assert!(is_transient_accept_error(&Error::new(
+            ErrorKind::WouldBlock,
+            "would block"
+        )));
+        assert!(is_transient_accept_error(&Error::new(
+            ErrorKind::Interrupted,
+            "interrupted"
+        )));
+        assert!(!is_transient_accept_error(&emfile()));
+    }
+
+    #[test]
+    fn resource_accept_errors_include_emfile_enfile_enobufs_enomem() {
+        for errno in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
+            assert!(is_resource_accept_error(&Error::from_raw_os_error(errno)));
+        }
+        assert!(is_resource_accept_error(&Error::new(
+            ErrorKind::ConnectionAborted,
+            "aborted"
+        )));
+        assert!(!is_resource_accept_error(&Error::new(
+            ErrorKind::PermissionDenied,
+            "denied"
+        )));
+        assert!(!is_resource_accept_error(&Error::other("other")));
+    }
+
+    #[test]
+    fn resource_error_kinds_are_not_transient() {
+        for errno in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
+            assert!(!is_transient_accept_error(&Error::from_raw_os_error(errno)));
+        }
+    }
+
+    #[test]
+    fn reporter_emits_first_error_immediately() {
+        let mut report = AcceptErrorReport::new();
+        assert!(report.last_log.is_none());
+        report.log(&emfile());
+        assert!(report.last_log.is_some());
+        assert_eq!(report.suppressed, 0);
+    }
+
+    #[test]
+    fn reporter_suppresses_repeats_within_window() {
+        let mut report = AcceptErrorReport::new();
+        report.log(&emfile());
+        for _ in 0..1000 {
+            report.log(&emfile());
+        }
+        assert_eq!(report.suppressed, 1000);
+    }
+
+    #[test]
+    fn reporter_emits_summary_after_window_with_suppressed_count() {
+        let mut report = AcceptErrorReport::new();
+        report.log(&emfile());
+        report.last_log = Some(Instant::now() - ACCEPT_ERROR_SUPPRESS);
+        report.suppressed = 5_558_248;
+        report.log(&emfile());
+        assert_eq!(report.suppressed, 0);
+        assert!(report.last_log.unwrap() > Instant::now() - Duration::from_secs(1));
+    }
+
+    #[test]
+    fn reporter_keys_by_error_signature() {
+        let reporter = AcceptErrorReporter::new();
+        reporter.report(&emfile());
+        reporter.report(&Error::from_raw_os_error(libc::ENFILE));
+        let reports = reporter.reports.lock().unwrap();
+        assert_eq!(reports.len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn handle_accept_error_sleeps_on_resource_errors() {
+        let reporter = AcceptErrorReporter::new();
+        let start = tokio::time::Instant::now();
+        handle_accept_error(&reporter, emfile()).await;
+        assert_eq!(start.elapsed(), ACCEPT_BACKOFF_RESOURCE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn handle_accept_error_sleeps_less_on_other_errors() {
+        let reporter = AcceptErrorReporter::new();
+        let start = tokio::time::Instant::now();
+        handle_accept_error(&reporter, Error::other("boom")).await;
+        assert_eq!(start.elapsed(), ACCEPT_BACKOFF_OTHER);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn handle_accept_error_does_not_sleep_on_transient_errors() {
+        let reporter = AcceptErrorReporter::new();
+        let start = tokio::time::Instant::now();
+        handle_accept_error(
+            &reporter,
+            Error::new(ErrorKind::Interrupted, "interrupted"),
+        )
+        .await;
+        assert_eq!(start.elapsed(), Duration::ZERO);
+    }
 
     #[test]
     fn idle_state_starts_not_idle() {

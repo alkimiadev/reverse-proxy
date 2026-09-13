@@ -1,6 +1,6 @@
 ---
-status: open
-last_updated: 2026-09-12
+status: mitigated
+last_updated: 2026-09-13
 reviewed_code:
   - src/server.rs
   - src/config/static_config.rs
@@ -14,7 +14,8 @@ fixes:
   - M1: MITIGATED in production 2026-09-12 — container RLIMIT_NOFILE raised
     to 8192 (compose ulimits) and max_connections lowered 1024 → 800.
     Code fixes (C1 backoff, C2 validation) remain open.
-  - C1: OPEN — accept loop busy-spins on accept errors, no backoff.
+  - C1: FIXED 2026-09-13 — accept-loop error classification + backoff +
+    signature-keyed log de-duplication (src/server.rs).
   - C2: OPEN — no startup cross-check that max_connections fits under
     RLIMIT_NOFILE with headroom.
 ---
@@ -115,6 +116,9 @@ After mitigation (`nofile 8192`, `max_connections 800`): 0 EMFILE lines,
 
 ## Finding C1: Accept loop busy-spins on persistent accept errors [server]
 
+**Status**: FIXED 2026-09-13. The accept loop in `serve_https_listener()`
+now classifies accept errors and backs off (see "C1 fix" below).
+
 **Severity**: High — turns any FD/socket exhaustion into a log flood that
 burns disk and I/O (1.9 GB in 2 hours observed) and starves the accept
 loop entirely.
@@ -140,29 +144,63 @@ is no blocking wait between retries, so `continue` yields a ~13 µs
 error-log cycle. The log write itself (to file + stdout) makes the spin
 slower and more destructive.
 
-**Recommended fix** (matching tokio's standard pattern):
+**C1 fix (landed)**: `src/server.rs` implements:
+
+- `is_transient_accept_error()` — `WouldBlock`/`Interrupted` retry
+  immediately with no log and no sleep (correct under load).
+- `is_resource_accept_error()` — `ConnectionAborted`, `EMFILE`, `ENFILE`,
+  `ENOBUFS`, `ENOMEM` → log + 1 s backoff.
+- Everything else → log + 100 ms backoff.
+- `AcceptErrorReporter` — de-duplicates by error signature: first
+  occurrence logs at `error!`, repeats within a 10 s window are counted,
+  and each window close emits one summary line with `suppressed=N`
+  `backoff_ms=1000`. The 6M-line incident shape would now produce ~720
+  log lines over 2 hours instead of 6M.
+- The `conn_sem.acquire_owned()` error path (semaphore closed) also
+  sleeps 100 ms instead of spinning.
+
+Notes from implementation:
+
+- The redirect (:80) and health (:9900) listeners use `axum::serve`,
+  which already applies the hyper-style 1 s backoff on non-connection
+  accept errors (axum 0.8.9 `src/serve/listener.rs` →
+  `handle_accept_error`). No change needed there; the busy-spin existed
+  only in the custom HTTPS loop.
+- Two follow-up findings surfaced while fixing C1 (still open, tracked
+  in "Recommended next steps"):
+  - **C3 (new)**: `tls_acceptor.accept()` has no timeout — a stalled TLS
+    handshake holds an FD *and* a semaphore permit indefinitely (the idle
+    watchdog only starts after the handshake completes). This is the
+    likely actual FD-exhaustion vector for slow/held crawler
+    handshakes, and a slowloris amplifier.
+  - **C4 (new)**: `conn_sem` is per-listener (`main.rs` spawns one
+    `serve_https_listener` per listener, each creating its own
+    semaphore), so the effective connection cap is
+    `max_connections × listeners`. Any C2 RLIMIT cross-check must
+    account for this (or the semaphore should be shared).
+
+### Original finding (pre-fix, preserved for context)
+
+**Location**: `src/server.rs`, `serve_https_listener()` (lines ~255–264):
 
 ```rust
-Err(e) => {
-    // Transient errors: retry immediately (EINTR, EAGAIN under load).
-    // Persistent resource errors: back off so we don't busy-spin.
-    let kind = e.kind();
-    if matches!(kind, std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) {
-        continue;
-    }
-    if matches!(kind, std::io::ErrorKind::ConnectionAborted)
-        || e.raw_os_error() == Some(libc::EMFILE)
-        || e.raw_os_error() == Some(libc::ENFILE)
-    {
-        error!(error = %e, "failed to accept TCP connection; backing off 1s");
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        continue;
-    }
-    error!(error = %e, "failed to accept TCP connection");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    continue;
-}
+loop {
+    tokio::select! {
+        accept_result = tcp_listener.accept() => {
+            let (tcp_stream, remote_addr) = match accept_result {
+                Ok(conn) => conn,
+                Err(e) => {
+                    error!(error = %e, "failed to accept TCP connection");
+                    continue;   // <- busy spin on EMFILE/ENFILE
+                }
+            };
+            ...
 ```
+
+**Why it matters**: `accept()` fails *immediately* with `EMFILE` — there
+is no blocking wait between retries, so `continue` yields a ~13 µs
+error-log cycle. The log write itself (to file + stdout) makes the spin
+slower and more destructive.
 
 Options worth considering while fixing:
 - Log the first N occurrences of a repeated accept error at `error!`, then
@@ -172,8 +210,9 @@ Options worth considering while fixing:
   cheap: the process cannot make progress on accepts until FDs are
   released anyway.
 
-**Note**: the redirect (HTTP:80) listener and health listener should get
-the same treatment if they share this loop shape.
+**Note**: the redirect (HTTP:80) listener and health listener use a
+different loop shape (`axum::serve`) which already backs off; see the
+implementation notes above.
 
 ## Finding C2: max_connections is not cross-checked against RLIMIT_NOFILE [config]
 
@@ -236,14 +275,22 @@ behavior, which is exactly what made the EMFILE state reachable.
 
 ## Recommended next steps
 
-1. Land C1 (accept-loop error backoff + log de-duplication) — small,
-   high-value; directly prevents recurrence of the log flood even under
-   unknown future failure modes.
+1. ~~Land C1 (accept-loop error backoff + log de-duplication)~~ — DONE
+   2026-09-13 (see Finding C1).
 2. Land C2 (RLIMIT cross-check at startup) with a prominent warning or
-   hard validation error.
-3. Consider a doc note in `docs/architecture/operations.md` describing the
+   hard validation error. Must account for C4 (per-listener semaphore
+   multiplication) when computing the FD budget.
+3. Land C3 (TLS handshake timeout) — bound stalled handshakes so they
+   cannot hold FD + permit indefinitely; directly closes the crawler
+   slow-handshake vector described under "Trigger conditions".
+4. Consider C4 (shared connection semaphore across listeners) so
+   `max_connections` is a global cap rather than per-listener.
+5. Consider a doc note in `docs/architecture/operations.md` describing the
    nofile/max_connections relationship (the mitigation values above are a
    working baseline: `nofile 8192`, `max_connections 800`).
-4. Docker image: the deployment Dockerfile on dev1 is a two-line stub
+6. Docker image: the deployment Dockerfile on dev1 is a two-line stub
    (FROM + COPY); if the project's own `deploy/Dockerfile` is ever used,
    it should also set `ulimits` guidance or rely on compose as done here.
+   The repo's own `deploy/docker-compose.yml` still lacks the `ulimits`
+   block applied to dev1, and `deploy/reverse-proxy.service` lacks
+   `LimitNOFILE`.
