@@ -24,9 +24,9 @@ fixes:
     default 10s) wraps tls_acceptor.accept() in src/server.rs; stalled
     handshakes release FD + permit.
   - >-
-    C4: OPEN — connection semaphore is per-listener (src/server.rs:338), so
-    the effective cap is max_connections × listeners; sequence before C2 so
-    the RLIMIT cross-check uses the real FD budget.
+    C4: FIXED 2026-09-13 — connection semaphore is shared across all
+    listeners (ConnectionSemaphore, src/server.rs); max_connections is now a
+    process-wide cap, not max_connections × listeners.
   - >-
     C2: OPEN — no startup cross-check that max_connections fits under
     RLIMIT_NOFILE with headroom. Sequenced after C3/C4.
@@ -187,11 +187,13 @@ Notes from implementation:
     (default 10s) wrapping the accept in `tokio::time::timeout`. This
     was the likely actual FD-exhaustion vector for slow/held crawler
     handshakes, and a slowloris amplifier.
-  - **C4 (open)**: `conn_sem` is per-listener (`main.rs` spawns one
-    `serve_https_listener` per listener, each creating its own
-    semaphore), so the effective connection cap is
-    `max_connections × listeners`. Any C2 RLIMIT cross-check must
-    account for this (or the semaphore should be shared).
+  - ~~**C4 (open)**~~ — **FIXED 2026-09-13**: `conn_sem` was per-listener
+    (`main.rs` spawns one `serve_https_listener` per listener, each creating
+    its own semaphore), so the effective connection cap was
+    `max_connections × listeners`. Fixed via a single `ConnectionSemaphore`
+    (`Arc<Semaphore>` wrapper, src/server.rs) created in `main.rs` and shared
+    by every listener; `max_connections` is now a process-wide cap. This is
+    the topology the C2 RLIMIT cross-check should assume.
 
 ### Original finding (pre-fix, preserved for context)
 
@@ -265,7 +267,7 @@ observed limit).
 
 Residual risk after mitigation: none identified for FD exhaustion at
 current traffic (peak concurrent connections observed ≪ 800); the code
-findings C4/C2 remain the durable fix (C1 + C3 landed 2026-09-13).
+findings C2 remains the durable fix (C1 + C3 + C4 landed 2026-09-13).
 
 ## Traffic-analysis side note (from the same investigation)
 
@@ -298,13 +300,18 @@ behavior, which is exactly what made the EMFILE state reachable.
    future is dropped, releasing the TCP FD and the semaphore permit; the
    idle watchdog never needs to run for a stalled handshake. Closes the
    crawler slow-handshake vector described under "Trigger conditions".
-3. Land C4 (shared connection semaphore across listeners) so
-   `max_connections` is a global cap rather than per-listener. Sequenced
-   before C2 because the RLIMIT cross-check's FD budget depends on the
-   final semaphore topology (shared vs per-listener).
+3. ~~Land C4 (shared connection semaphore across listeners) so
+   `max_connections` is a global cap rather than per-listener~~ — DONE
+   2026-09-13. `serve_https_listener()` no longer creates its own semaphore;
+   it receives an `Arc<ConnectionSemaphore>` (new public wrapper in
+   src/server.rs) built once in `main.rs` and cloned into every listener
+   task. `max_connections` is now the process-wide concurrent TLS connection
+   cap; the effective cap no longer scales with listener count. This is the
+   topology C2's RLIMIT cross-check should assume.
 4. Land C2 (RLIMIT cross-check at startup) with a prominent warning or
-   hard validation error. Must account for C4 (per-listener semaphore
-   multiplication → shared after C4 lands) when computing the FD budget.
+   hard validation error. The FD budget assumes a shared semaphore
+   (landed, see step 3): connection FDs are capped at `max_connections`
+   process-wide.
    Lower urgency after M1: with the deploy baseline (`nofile 8192`,
    `max_connections 800`) the ceiling is ~10% of the limit, so C2 is a
    validation guard, not an active exposure.

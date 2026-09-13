@@ -171,6 +171,33 @@ impl InFlightCounter {
     }
 }
 
+/// Connection semaphore shared across all HTTPS listeners so that
+/// `max_connections` acts as a global cap rather than a per-listener cap
+/// (review #010 C4).
+pub struct ConnectionSemaphore {
+    semaphore: Arc<Semaphore>,
+    max_connections: usize,
+}
+
+impl ConnectionSemaphore {
+    pub fn new(max_connections: usize) -> Arc<Self> {
+        Arc::new(Self {
+            semaphore: Arc::new(Semaphore::new(max_connections)),
+            max_connections,
+        })
+    }
+
+    pub fn max_connections(&self) -> usize {
+        self.max_connections
+    }
+
+    pub async fn acquire_owned(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError> {
+        self.semaphore.clone().acquire_owned().await
+    }
+}
+
 #[derive(Debug)]
 struct IdleState {
     last_activity: Mutex<Instant>,
@@ -354,10 +381,9 @@ pub async fn serve_https_listener(
     in_flight: Arc<InFlightCounter>,
     connection_idle_timeout: Duration,
     tls_handshake_timeout: Duration,
-    max_connections: usize,
+    conn_sem: Arc<ConnectionSemaphore>,
 ) {
     let local_addr = tcp_listener.local_addr();
-    let conn_sem = Arc::new(Semaphore::new(max_connections));
     let accept_errors = Arc::new(AcceptErrorReporter::new());
 
     loop {
@@ -374,7 +400,6 @@ pub async fn serve_https_listener(
                 let tls_acceptor = tls_acceptor.clone();
                 let router = router.clone();
                 let in_flight = in_flight.clone();
-                let conn_sem = conn_sem.clone();
 
                 let permit = match conn_sem.acquire_owned().await {
                     Ok(permit) => permit,
@@ -797,6 +822,33 @@ mod tests {
         let state = IdleState::new();
         assert!(state.idle_for() < Duration::from_millis(100));
         assert_eq!(state.in_flight(), 0);
+    }
+
+    #[tokio::test]
+    async fn connection_semaphore_reports_cap() {
+        let sem = ConnectionSemaphore::new(7);
+        assert_eq!(sem.max_connections(), 7);
+    }
+
+    #[tokio::test]
+    async fn connection_semaphore_permits_are_shared_across_clones() {
+        let sem = ConnectionSemaphore::new(2);
+
+        let p1 = sem.acquire_owned().await.unwrap();
+        let p2 = sem.acquire_owned().await.unwrap();
+
+        let clone = Arc::clone(&sem);
+        let blocked = tokio::time::timeout(Duration::from_millis(100), clone.acquire_owned()).await;
+        assert!(
+            blocked.is_err(),
+            "third acquire through a clone must block once the shared pool of 2 is exhausted"
+        );
+
+        drop(p1);
+        drop(p2);
+
+        let p3 = sem.acquire_owned().await.expect("permits released, acquire succeeds");
+        drop(p3);
     }
 
     #[test]

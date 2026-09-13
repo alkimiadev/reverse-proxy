@@ -17,7 +17,9 @@ use reverse_proxy::health;
 use reverse_proxy::logging;
 use reverse_proxy::proxy::{build_router, create_http_client, create_https_client, ProxyState};
 use reverse_proxy::rate_limit::{start_eviction_task, RateLimiter};
-use reverse_proxy::server::{drain_in_flight, serve_https_listener, InFlightCounter};
+use reverse_proxy::server::{
+    drain_in_flight, serve_https_listener, ConnectionSemaphore, InFlightCounter,
+};
 use reverse_proxy::shutdown::GracefulShutdown;
 use reverse_proxy::tls::acceptor::{setup_tls, TlsMode};
 use reverse_proxy::tls::redirect;
@@ -217,6 +219,12 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
     let app = build_router(proxy_state.clone(), config_arc.clone(), rate_limiter);
 
     let in_flight = InFlightCounter::new();
+    let conn_sem = ConnectionSemaphore::new(loaded_config.static_config.max_connections);
+
+    info!(
+        max_connections = conn_sem.max_connections(),
+        "global connection semaphore created (shared across all listeners)"
+    );
 
     let mut https_server_handles = Vec::new();
 
@@ -237,7 +245,7 @@ async fn run_server(loaded_config: cli::LoadedConfig, config_path: &str) -> Resu
             std::time::Duration::from_secs(
                 loaded_config.static_config.tls_handshake_timeout_secs,
             ),
-            loaded_config.static_config.max_connections,
+            conn_sem.clone(),
         ));
 
         info!(

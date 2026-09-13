@@ -92,7 +92,7 @@ Immutable after startup. Changes require a process restart.
 | `shutdown_timeout_secs` | `u64` | Maximum seconds to wait for in-flight requests during graceful shutdown (default: `30`) |
 | `connection_idle_timeout_secs` | `u64` | Server-side idle timeout for client TLS connections. Idle HTTP/2 connections are closed after this duration (with keep-alive pings at 15s intervals to detect dead peers). HTTP/1.1 connections are closed if the client doesn't send a complete request header within this duration. Prevents FD exhaustion from abandoned connections (default: `60`; must be > 0; see review #007 C1) |
 | `tls_handshake_timeout_secs` | `u64` | Maximum seconds a client may take to complete the TLS handshake. Stalled handshakes (e.g. crawlers/slowloris clients that open a TCP connection but never send a ClientHello) are closed after this duration, releasing the FD and connection slot. Without it, a stalled handshake holds an FD + connection semaphore permit indefinitely (default: `10`; must be > 0; see review #010 C3) |
-| `max_connections` | `usize` | Maximum number of concurrent client TLS connections. When the limit is reached, new connections wait in the OS TCP backlog until a slot frees (default: `1024`; must be > 0; see review #007 C2) |
+| `max_connections` | `usize` | Maximum number of concurrent client TLS connections **process-wide**. The connection semaphore is shared across all HTTPS listeners, so this is a global cap — not a per-listener cap. When the limit is reached, new connections wait in the OS TCP backlog until a slot frees (default: `1024`; must be > 0; see review #007 C2, review #010 C4) |
 | `logging` | `LoggingConfig` | Logging configuration (see below) |
 
 **LoggingConfig** (nested in `[logging]` TOML section):
@@ -316,7 +316,7 @@ health_check_port = 9900     # Local health check (0 to disable)
 admin_key_path = "/etc/reverse-proxy/admin-key"  # Empty string to disable
 # connection_idle_timeout_secs = 60  # Server-side idle timeout (default: 60)
 # tls_handshake_timeout_secs = 10     # TLS handshake timeout (default: 10)
-# max_connections = 1024              # Max concurrent TLS connections (default: 1024)
+# max_connections = 1024              # Max concurrent TLS connections, process-wide across all listeners (default: 1024)
 
 [logging]
 level = "info"
@@ -463,7 +463,9 @@ On startup, the config is validated:
      the server-side idle timeout, reintroducing the FD exhaustion bug from
      review #007 C1.
 22. `max_connections` must be > 0. A zero value would deadlock the connection
-     semaphore, preventing any client connection from being accepted.
+     semaphore, preventing any client connection from being accepted. The
+     semaphore is shared across all listeners (review #010 C4), so
+     `max_connections` is the process-wide cap rather than per-listener.
 23. `tls_handshake_timeout_secs` must be > 0. A zero value would immediately
      kill every TLS handshake, preventing any client connection from
      completing (review #010 C3).

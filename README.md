@@ -117,7 +117,7 @@ Configuration uses TOML and is split into **static** (requires restart) and
 | `shutdown_timeout_secs` | `30` | Graceful shutdown timeout |
 | `connection_idle_timeout_secs` | `60` | Server-side idle timeout for client TLS connections (prevents FD exhaustion from abandoned connections) |
 | `tls_handshake_timeout_secs` | `10` | Max seconds to complete the TLS handshake; stalled handshakes are closed (prevents slowloris FD/permit exhaustion) |
-| `max_connections` | `1024` | Max concurrent client TLS connections (backpressure via semaphore) |
+| `max_connections` | `1024` | Max concurrent client TLS connections, shared across all listeners (global semaphore) |
 | `logging.level` | `"info"` | Log level |
 | `logging.format` | `"text"` | Log format (`"text"` or `"json"`) |
 | `logging.log_file_path` | (not set) | Path to log file for fail2ban |

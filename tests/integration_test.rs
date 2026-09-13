@@ -1177,6 +1177,21 @@ mod idle_timeout_tests {
         tokio::task::JoinHandle<()>,
         tokio::sync::watch::Sender<bool>,
     ) {
+        let conn_sem = reverse_proxy::server::ConnectionSemaphore::new(1024);
+        spawn_test_https_server(idle_timeout, handshake_timeout, upstream, conn_sem).await
+    }
+
+    async fn spawn_test_https_server(
+        idle_timeout: Duration,
+        handshake_timeout: Duration,
+        upstream: String,
+        conn_sem: Arc<reverse_proxy::server::ConnectionSemaphore>,
+    ) -> (
+        std::net::SocketAddr,
+        Arc<InFlightCounter>,
+        tokio::task::JoinHandle<()>,
+        tokio::sync::watch::Sender<bool>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let tls_acceptor = make_test_tls_acceptor();
@@ -1195,7 +1210,7 @@ mod idle_timeout_tests {
                 in_flight_clone,
                 idle_timeout,
                 handshake_timeout,
-                1024,
+                conn_sem,
             )
             .await;
         });
@@ -1537,6 +1552,80 @@ mod idle_timeout_tests {
         );
         assert_eq!(in_flight.count(), 1, "connection should remain in-flight");
 
+        let _ = upstream.shutdown_tx.send(());
+    }
+
+    // Reproducer for review #010 C4: the connection semaphore must be shared
+    // across listeners. Two listeners with a shared cap of 2 must admit only
+    // 2 concurrent connections total — the third connection, hitting either
+    // listener, must wait until a slot frees.
+    #[tokio::test]
+    async fn connection_semaphore_is_shared_across_listeners() {
+        let conn_sem = reverse_proxy::server::ConnectionSemaphore::new(2);
+
+        let upstream = helpers::http_test_helper::TestUpstream::spawn_ok().await;
+        let upstream_addr = format!("127.0.0.1:{}", upstream.addr.port());
+
+        let (addr1, _in_flight1, _h1, _s1) = spawn_test_https_server(
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+            upstream_addr.clone(),
+            conn_sem.clone(),
+        )
+        .await;
+        let (addr2, _in_flight2, _h2, _s2) = spawn_test_https_server(
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+            upstream_addr,
+            conn_sem.clone(),
+        )
+        .await;
+
+        // Two live connections saturate the shared pool: one per listener.
+        let tls1 = connect_tls(addr1).await;
+        let tls2 = connect_tls(addr2).await;
+
+        // A third connection (racing against listener 1) must not complete its
+        // handshake: the accept loop parks it on the shared semaphore before
+        // TLS ever starts.
+        let (third_tx, third_rx) = tokio::sync::oneshot::channel();
+        let third_task = tokio::spawn(async move {
+            let stream = connect_tls(addr1).await;
+            let _ = third_tx.send(stream);
+        });
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            third_rx.is_empty(),
+            "third connection must be capped by the shared semaphore"
+        );
+
+        // Release one slot; the parked third connection must now get through.
+        drop(tls2);
+
+        let mut tls3 = tokio::time::timeout(Duration::from_secs(5), third_rx)
+            .await
+            .expect("third connection should complete after a permit is released")
+            .expect("third connection task should not panic");
+
+        tls3.write_all(b"GET / HTTP/1.1\r\nHost: test.local\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut buf = vec![0u8; 4096];
+        let n = tokio::time::timeout(Duration::from_secs(5), tls3.read(&mut buf))
+            .await
+            .expect("timeout waiting for response")
+            .expect("read error");
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "expected a real 200 round-trip on the capped connection, got: {response}"
+        );
+
+        third_task.abort();
+        drop(tls1);
+        drop(tls3);
         let _ = upstream.shutdown_tx.send(());
     }
 }
